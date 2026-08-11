@@ -32,6 +32,8 @@ Tensor* tensor_create(size_t* shape, size_t ndim){
 
     tensor->dtype = FLOAT32;
     tensor->requires_grad = false;
+    tensor->grad = NULL;
+    tensor->grad_fn = NULL;
     tensor->data = (float*)calloc(tensor->size,sizeof(float));
 
     if(!tensor->data){
@@ -48,6 +50,7 @@ void tensor_free(Tensor* tensor){
     if(!tensor) return;
     free(tensor->data);
     free(tensor->shape);
+    tensor_free(tensor->grad);
     free(tensor);
 }
 // tensor_fill: set every element to the same scalar value
@@ -107,10 +110,4 @@ Tensor* tensor_clone(const Tensor* tensor){
     memcpy(clone->data, tensor->data, tensor->size * sizeof(float));
 
     return clone;
-}
-
-void tensor_backward(Tensor* tensor) {
-    if (!tensor) return;
-    // Placeholder: autograd graph traversal will be implemented in autograd.c
-    printf("tensor_backward: autograd not yet implemented\n");
 }

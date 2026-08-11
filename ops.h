@@ -1,4 +1,6 @@
 // ops.h
+#include "tensor.h"
+
 Tensor* matmul(const Tensor* A, const Tensor* B);
 Tensor* add(const Tensor* A, const Tensor* B);
 Tensor* relu(const Tensor* A);

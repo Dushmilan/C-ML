@@ -1,7 +1,9 @@
 #include "ops.h"
 #include"tensor.h"
+#include"Autograd.h"
 #include <stdio.h>
 #include<stdlib.h>
+#include <math.h>
 
 
 Tensor* matmul(const Tensor* A, const Tensor* B) {
@@ -48,7 +50,19 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
     result->ndim = 2;
     result->size = total;
     result->dtype = FLOAT32;
-    result->requires_grad = false;
+    result->requires_grad = A->requires_grad || B->requires_grad;
+    result->grad = NULL;
+
+    if (result->requires_grad) {
+        OpNode* in[2] = { node_of((Tensor*)A), node_of((Tensor*)B) };
+        OpNode* node = opnode_create(in, 2, autograd_backward_matmul);
+        if (node) {
+            node->value = result;
+            opnode_save(node, (Tensor*)A);
+            opnode_save(node, (Tensor*)B);
+            result->grad_fn = node;
+        }
+    }
 
     return result;
 }
@@ -83,6 +97,16 @@ Tensor* add(const Tensor* A, const Tensor* B){
     result->size = A->size;
     result->dtype = A->dtype;
     result->requires_grad = A->requires_grad || B->requires_grad;
+    result->grad = NULL;
+
+    if (result->requires_grad) {
+        OpNode* in[2] = { node_of((Tensor*)A), node_of((Tensor*)B) };
+        OpNode* node = opnode_create(in, 2, autograd_backward_add);
+        if (node) {
+            node->value = result;
+            result->grad_fn = node;
+        }
+    }
 
     return result;
 }
@@ -112,6 +136,17 @@ Tensor* relu(const Tensor* A){
     result->size = A->size;
     result->dtype = A->dtype;
     result->requires_grad = A->requires_grad;
+    result->grad = NULL;
+
+    if (result->requires_grad) {
+        OpNode* node = opnode_create(NULL, 1, autograd_backward_relu);
+        if (node) {
+            node->value = result;
+            node->inputs[0] = node_of((Tensor*)A);
+            opnode_save(node, (Tensor*)A);
+            result->grad_fn = node;
+        }
+    }
 
     return result;
 }
@@ -167,6 +202,18 @@ Tensor* softmax(const Tensor* A, int axis){
     result->size = A->size;
     result->dtype = FLOAT32;
     result->requires_grad = A->requires_grad;
+    result->grad = NULL;
+
+    if (result->requires_grad) {
+        OpNode* node = opnode_create(NULL, 1, autograd_backward_softmax);
+        if (node) {
+            node->value = result;
+            node->axis = axis;
+            node->inputs[0] = node_of((Tensor*)A);
+            opnode_save(node, result);
+            result->grad_fn = node;
+        }
+    }
 
     return result;
 
@@ -201,6 +248,18 @@ Tensor* cross_entropy_loss(const Tensor* logits, const Tensor* targets) {
     result->size = 1;
     result->dtype = FLOAT32;
     result->requires_grad = logits->requires_grad || targets->requires_grad;
+    result->grad = NULL;
+
+    if (result->requires_grad) {
+        OpNode* in[2] = { node_of((Tensor*)logits), node_of((Tensor*)targets) };
+        OpNode* node = opnode_create(in, 2, autograd_backward_cross_entropy);
+        if (node) {
+            node->value = result;
+            opnode_save(node, (Tensor*)logits);
+            opnode_save(node, (Tensor*)targets);
+            result->grad_fn = node;
+        }
+    }
 
     return result;
 }
