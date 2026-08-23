@@ -1,14 +1,33 @@
-#include "Matrix_Basic_Fun.h"
+#include "ops.h"
+#include "tensor.h"
+#include "memory_pool.h"
+
+
+#define N_STEPS 100
+
 
 int main() {
-    int mat1[2][3] = {{1, 2, 3}, {4, 5, 6}};
-    int mat2[3][2] = {{7, 8}, {9, 10}, {11, 12}};
-    int result[2][2];
+   for (int step = 0; step < N_STEPS; step++) {
 
-    matmul(2, 3, mat1, 3, 2, mat2, result);
+        // 1. Create this step's tensors (cheap — they come from the pool)
+        Tensor* x = tensor_create((size_t[]){2, 3}, 2);
+        Tensor* w = tensor_create((size_t[]){3, 2}, 2);
+        tensor_fill(x, 1.0f);
+        tensor_fill(w, 2.0f);
 
-    displayMatrix(2, 2, result);
+        // 2. Forward pass
+        Tensor* logits = matmul(x, w);
+        Tensor* probs  = softmax(logits, 1);
+        // ... loss, backward, weight update, etc.
 
+        // 3. COPY OUT anything you must keep BEFORE resetting
+        //    e.g. float step_loss = loss->data[0];
+        //    (gradients for the update must also be read here)
+
+        // 4. Reclaim all pool memory for the next step
+        pool_reset(get_pool());
+        //    x, w, logits, probs, ... are now INVALID — do NOT use them again
+    }
     return 0;
 }
 
@@ -17,8 +36,8 @@ TODOs:
 - [x] tensor.c: implement tensor_create, tensor_free, tensor_fill, tensor_print, tensor_clone
 - [x] ops.c: implement matmul, add, relu, softmax, cross_entropy_loss
 - [x] autograd.c: implement OpNode creation and backward graph traversal
-- [ ] memory_pool.c: implement pool_create, pool_alloc, pool_reset
-- [ ] Integrate memory pool into tensor.c (replace malloc/calloc)
-- [ ] Refactor Main.c to use Tensor API instead of int mat1[2][3]
+- [x] memory_pool.c: implement pool_create, pool_alloc, pool_reset
+- [x] Integrate memory pool into tensor.c (replace malloc/calloc)
+- [x] Refactor Main.c to use Tensor API instead of int mat1[2][3]
 - [ ] Add tests for tensor operations
 */

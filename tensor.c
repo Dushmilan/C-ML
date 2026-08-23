@@ -1,9 +1,9 @@
 #include "tensor.h"
 #include "Autograd.h"
+#include "memory_pool.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
 /*
  * tensor_create: allocate and initialize a Tensor on the heap.
  * Parameters:
@@ -13,46 +13,34 @@
  */
 
 Tensor* tensor_create(size_t* shape, size_t ndim){
+
     // Allocate one Tensor struct on the heap
-    Tensor* tensor = (Tensor*)malloc(sizeof(Tensor));    if(!tensor) return NULL;
+    Tensor* tensor = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!tensor) return NULL;
 
     tensor->ndim = ndim;
-    tensor->shape = (size_t*)malloc(ndim*sizeof(size_t));
-    if (!tensor->shape){
-        free(tensor);
-        return NULL;
-    }
+    tensor->shape = (size_t*)pool_alloc(get_pool(), ndim*sizeof(size_t));
+    if (!tensor->shape)  return NULL; 
 
     tensor->size = 1;
-    for (size_t i = 0; i < ndim; i++)
-    {
-        tensor->shape[i] = shape[i];
-        tensor->size *= shape[i];
-    }
+    for (size_t i = 0; i < ndim; i++) { tensor->shape[i] = shape[i]; tensor->size *= shape[i]; }
+
 
     tensor->dtype = FLOAT32;
     tensor->requires_grad = false;
     tensor->grad = NULL;
     tensor->grad_fn = NULL;
-    tensor->data = (float*)calloc(tensor->size,sizeof(float));
-
-    if(!tensor->data){
-        free(tensor->shape);
-        free(tensor);
-        return NULL;
-    }
+    tensor->data = (float*)pool_alloc(get_pool(), tensor->size*sizeof(float));
+    if(!tensor->data) return NULL;
     
+    memset(tensor->data, 0, tensor->size * sizeof(float)); //replaces calloc
     return tensor;
 }
 
 // tensor_free: release all memory owned by the tensor
-void tensor_free(Tensor* tensor){
-    if(!tensor) return;
-    free(tensor->data);
-    free(tensor->shape);
-    tensor_free(tensor->grad);
-    free(tensor);
-}
+void tensor_free(Tensor* t){ (void)t; }   /* freed wholesale via pool_reset */
+
+
 // tensor_fill: set every element to the same scalar value
 
 void tensor_fill(Tensor* tensor, float value){

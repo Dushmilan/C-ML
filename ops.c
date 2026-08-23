@@ -1,10 +1,10 @@
 #include "ops.h"
+#include "memory_pool.h"
 #include"tensor.h"
 #include"Autograd.h"
 #include <stdio.h>
 #include<stdlib.h>
 #include <math.h>
-
 
 Tensor* matmul(const Tensor* A, const Tensor* B) {
     if (!A || !B || !A->data || !B->data) return NULL;
@@ -26,7 +26,7 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
     }
 
     size_t total = m * n;
-    float* out_data = (float*)malloc(total * sizeof(float));
+    float* out_data = (float*)pool_alloc(get_pool(), total * sizeof(float));
     if (!out_data) return NULL;
 
     for (size_t i = 0; i < m; i++) {
@@ -39,12 +39,12 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
         }
     }
 
-    Tensor* result = (Tensor*)malloc(sizeof(Tensor));
-    if (!result) { free(out_data); return NULL; }
+    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result) return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)malloc(2 * sizeof(size_t));
-    if (!result->shape) { free(out_data); free(result); return NULL; }
+    result->shape = (size_t*)pool_alloc(get_pool(), 2 * sizeof(size_t));
+    if (!result->shape) return NULL;
     result->shape[0] = m;
     result->shape[1] = n;
     result->ndim = 2;
@@ -76,19 +76,19 @@ Tensor* add(const Tensor* A, const Tensor* B){
         return NULL;
     }
 
-    float* out_data = (float*)malloc(A->size * sizeof(float));
+    float* out_data = (float*)pool_alloc(get_pool(), A->size * sizeof(float));
     if (!out_data) return NULL;
 
     for (size_t i = 0; i < A->size; i++)
     {
         out_data[i] = A->data[i] + B->data[i];
     }
-    Tensor* result = (Tensor*)malloc(sizeof(Tensor));
-    if (!result) { free(out_data); return NULL; }
+    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result) return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)malloc(A->ndim*sizeof(size_t));
-    if (!result->shape) { free(out_data); free(result); return NULL; }
+    result->shape = (size_t*)pool_alloc(get_pool(), A->ndim*sizeof(size_t));
+    if (!result->shape) return NULL;
 
     for (size_t i = 0; i < A->ndim; i++) {
         result->shape[i] = A->shape[i];
@@ -115,19 +115,19 @@ Tensor* add(const Tensor* A, const Tensor* B){
 Tensor* relu(const Tensor* A){
     if (!A || !A->data) return NULL;
 
-    float* out_data = (float*)malloc(A->size * sizeof(float));
+    float* out_data = (float*)pool_alloc(get_pool(), A->size * sizeof(float));
     if (!out_data) return NULL;
     
     for (size_t i = 0; i < A->size; i++) {
         out_data[i] = A->data[i] > 0.0f ? A->data[i] : 0.0f;
     }
 
-    Tensor* result = (Tensor*)malloc(sizeof(Tensor));
-    if (!result) { free(out_data); return NULL; }
+    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result) return NULL; 
 
     result->data = out_data;
-    result->shape = (size_t*)malloc(A->ndim * sizeof(size_t));
-    if (!result->shape) { free(out_data); free(result); return NULL; }
+    result->shape = (size_t*)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
+    if (!result->shape) return NULL; 
 
     for (size_t i = 0; i < A->ndim; i++) {
         result->shape[i] = A->shape[i];
@@ -155,7 +155,7 @@ Tensor* softmax(const Tensor* A, int axis){
     if (!A || !A->data || axis < 0 || (size_t)axis >= A->ndim) return NULL;
 
     size_t axis_size = A->shape[axis];
-    float* out_data = (float*)malloc(A->size * sizeof(float));
+    float* out_data = (float*)pool_alloc(get_pool(), A->size * sizeof(float));
     if (!out_data) return NULL;
 
     // Compute stride for the axis
@@ -188,12 +188,12 @@ Tensor* softmax(const Tensor* A, int axis){
         }
     }
 
-    Tensor* result = (Tensor*)malloc(sizeof(Tensor));
-    if (!result) { free(out_data); return NULL; }
+    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result) return NULL; 
 
     result->data = out_data;
-    result->shape = (size_t*)malloc(A->ndim * sizeof(size_t));
-    if (!result->shape) { free(out_data); free(result); return NULL; }
+    result->shape = (size_t*)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
+    if (!result->shape) return NULL; 
 
     for (size_t i = 0; i < A->ndim; i++) {
         result->shape[i] = A->shape[i];
@@ -224,7 +224,7 @@ Tensor* cross_entropy_loss(const Tensor* logits, const Tensor* targets) {
     if (!logits || !targets || !logits->data || !targets->data) return NULL;
     if (logits->size != targets->size) return NULL;
 
-    float* out_data = (float*)malloc(sizeof(float));
+    float* out_data = (float*)pool_alloc(get_pool(), sizeof(float));
     if (!out_data) return NULL;
 
     float loss = 0.0f;
@@ -237,12 +237,12 @@ Tensor* cross_entropy_loss(const Tensor* logits, const Tensor* targets) {
     }
     out_data[0] = loss / (float)logits->size;
 
-    Tensor* result = (Tensor*)malloc(sizeof(Tensor));
-    if (!result) { free(out_data); return NULL; }
+    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result) return NULL; 
 
     result->data = out_data;
-    result->shape = (size_t*)malloc(sizeof(size_t));
-    if (!result->shape) { free(out_data); free(result); return NULL; }
+    result->shape = (size_t*)pool_alloc(get_pool(), sizeof(size_t));
+    if (!result->shape) return NULL; 
     result->shape[0] = 1;
     result->ndim = 1;
     result->size = 1;

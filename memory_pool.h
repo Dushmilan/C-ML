@@ -1,5 +1,5 @@
 // memory_pool.h
-ttypedef struct MemoryPool {
+typedef struct MemoryPool {
     void* pool;               // Generic pointer
     size_t pool_size;
     size_t used;
@@ -10,4 +10,4 @@ ttypedef struct MemoryPool {
 MemoryPool* pool_create(size_t bytes);
 void* pool_alloc(MemoryPool* pool, size_t bytes);
 void pool_reset(MemoryPool* pool);  // Free all at once (per training step)
-
+MemoryPool* get_pool(void);  // Return the global pool instance
