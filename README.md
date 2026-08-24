@@ -6,20 +6,21 @@
 [![Build](https://img.shields.io/badge/build-gcc%20--Wall%20--Wextra-success)](Makefile)
 [![Format](https://img.shields.io/badge/format-clang--format%2022.1.8%20LLVM-lightgrey)](.clang-format)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-[![Phase](https://img.shields.io/badge/phase-1%20complete-brightgreen)](#roadmap)
+[![Phase](https://img.shields.io/badge/phase-2%20optimizer%20done-blue)](#roadmap)
 
 ---
 
 ## Overview
 
-**C-ML** implements the core primitives of modern ML frameworks (PyTorch/JAX) in ~800 lines of C:
+**C-ML** implements the core primitives of modern ML frameworks (PyTorch/JAX) in ~900 lines of C:
 
-- **Tensor** — n-dimensional array with dtype, shape, and autograd metadata
-- **Memory Pool** — 1 GiB arena / bump allocator for per-step allocations (O(1) reclaim via `pool_reset`)
+- **Tensor** — n-dimensional array with dtype, shape, autograd metadata, and **persistent** (malloc) vs **pool** allocation
+- **Memory Pool** — 1 GiB arena / bump allocator for per-step activations (O(1) reclaim via `pool_reset`)
 - **Ops** — `matmul`, `add`, `relu`, `softmax`, `cross_entropy_loss` (forward)
 - **Autograd** — dynamic computation graph with reverse-mode backprop and topological sort
+- **Optimizer** — vanilla **SGD** (`w -= lr * grad`) with `zero_grad` and persistent weight support
 
-Phase 1 is **feature-complete and tested**. Phase 2 will add optimizers, weight persistence, initialization, and modules.
+Phase 1 is **complete** (tensor/pool/ops/autograd). Phase 2 **optimizer is complete** — training now actually learns (`loss 0.346 → 0.323` in 5 steps). Next: init, modules, Adam, DataLoader.
 
 Framework is intentionally minimal and readable — ideal for learning how tensors, memory, and backprop actually work under the hood.
 
@@ -47,11 +48,12 @@ Framework is intentionally minimal and readable — ideal for learning how tenso
 
 | Area | Details |
 |------|---------|
-| **Tensor** | Dynamic `ndim`/`shape`/`size`, `FLOAT32` storage, `requires_grad` + `grad` + `grad_fn` for autograd |
+| **Tensor** | Dynamic `ndim`/`shape`/`size`, `FLOAT32` storage, `requires_grad` + `grad` + `grad_fn`, `tensor_persistent_create` for weights |
 | **Memory Pool** | Single 1 GiB backing buffer, 16-byte aligned bump allocator, `alloc_count` tracking, zero per-allocation `free` overhead |
 | **Ops (Forward)** | `matmul` (2D, O(m·k·n)), `add` (elementwise), `relu`, `softmax` (stable, arbitrary axis), `cross_entropy_loss` (mean, clamped) |
 | **Autograd (Backward)** | Per-op `backward` kernels, gradient accumulation (`_acc_grad`), leaf memoization (`node_of`), recursive post-order DFS (`_topo`), scalar loss seeding |
-| **Tooling** | `Makefile` (`make test`), `clang-format` LLVM 100-col, `tests/test_all.c` harness |
+| **Optimizer** | `SGD` — `sgd_create(lr)`, `sgd_add_param`, `sgd_step(w -= lr*grad)`, `sgd_zero_grad`, `sgd_free`; works with persistent params + pool grads |
+| **Tooling** | `Makefile` (`make test` 4 tests), `clang-format` LLVM 100-col, `tests/test_all.c` harness |
 | **Zero Dependencies** | Only `libc` + `libm` |
 
 ---
@@ -59,26 +61,26 @@ Framework is intentionally minimal and readable — ideal for learning how tenso
 ## Architecture
 
 ```
-Main.c (training loop)
+Main.c (training loop: DataLoader → forward → backward → SGD → reset)
    │
-   ├── tensor.h/c ──┐
-   │   creates/views│
+   ├── tensor.h/c ──┐ (pool vs persistent)
    ├── ops.h/c ─────┼──► memory_pool.h/c (arena: pool_create / pool_alloc / pool_reset / get_pool)
-   │   forward + graph build │
-   └── Autograd.h/c ─┘
-       graph / backward (opnode_create, node_of, _acc_grad, _topo, tensor_backward)
+   ├── Autograd.h/c ┘ (opnode_create, node_of, _acc_grad, _topo, tensor_backward)
+   └── optimizer.h/c    (sgd_create, sgd_add_param, sgd_step, sgd_zero_grad)
 ```
 
-**Data flow for one step:**
+**Data flow for one step (Phase 2):**
 
 ```
-x[2,3]  w[3,2]
-   \    /
-   matmul → logits[2,2] → softmax(axis=1) → probs[2,2] → cross_entropy → loss[1]
-                               ▲ graph built inline on requires_grad==true
-                               │
-                           tensor_backward(loss) → DFS topo → reverse backward → x.grad / w.grad
-   pool_reset(get_pool()) → O(1) reclaim for next step
+w[3,2] persistent (malloc) ──┐
+                              ├──► matmul(x,w) → logits[2,2] → softmax → probs → cross_entropy → loss[1]
+x[2,3] pool (activations) ────┘          ▲ graph built on requires_grad
+                                         │
+                                     tensor_backward(loss) → topo → backward → w.grad (pool)
+                                         │
+                                     sgd_step: w -= lr*w.grad (reads pool grad before reset)
+                                     sgd_zero_grad: w.grad=NULL
+                                     pool_reset → reclaims x/logits/probs/loss/grads, w persists
 ```
 
 ---
@@ -87,14 +89,15 @@ x[2,3]  w[3,2]
 
 ```
 .
-├── tensor.h / tensor.c           # Tensor struct, create/fill/print/clone (pool-backed)
+├── tensor.h / tensor.c           # Tensor struct, pool create + persistent create, fill/print/clone
 ├── memory_pool.h / memory_pool.c # Arena allocator (1 GiB, 16B align, bump + reset)
 ├── ops.h / ops.c                 # Forward ops: matmul, add, relu, softmax, cross_entropy_loss
 ├── Autograd.h / Autograd.c       # OpNode graph, backward kernels, topo sort, tensor_backward
-├── Main.c                        # Example N_STEPS=100 training loop (pool_reset pattern)
+├── optimizer.h / optimizer.c     # SGD optimizer (vanilla GD, persistent params)
+├── Main.c                        # Phase 2 demo: persistent w + SGD, loss 0.346→0.323 in 5 steps
 ├── Matrix_Basic_Fun.h/c          # Legacy matrix helpers (kept for reference)
-├── tests/test_all.c              # Minimal test harness (TEST/ASSERT/ASSERT_CLOSE)
-├── Makefile                      # CC=gcc, CFLAGS=-Wall -Wextra -I., `make test`
+├── tests/test_all.c              # 4 tests: create_and_fill, persistent_survives, sgd_step, end_to_end
+├── Makefile                      # CC=gcc, CFLAGS=-Wall -Wextra -I., SRC+=optimizer.c, `make test`
 ├── .clang-format                 # LLVM, IndentWidth 4, ColumnLimit 100, SortIncludes CaseSensitive
 └── README.md
 ```
@@ -106,15 +109,19 @@ x[2,3]  w[3,2]
 ### Requirements
 
 - `gcc` (≥ 11) with `-lm`
-- `clang-format` 22.1.8 (optional, for contribution) — installed via `pip install clang-format`
+- `clang-format` 22.1.8 (optional) — `pip install clang-format`
 - Linux / macOS (tested on Linux)
 
 ### Build & Run
 
 ```bash
-# Build the example (forward pass demo)
-gcc -Wall -Wextra tensor.c ops.c Autograd.c memory_pool.c Main.c -lm -o /tmp/cml
+# Phase 2 training demo (SGD, persistent weights)
+gcc -Wall -Wextra tensor.c ops.c Autograd.c memory_pool.c optimizer.c Main.c -lm -o /tmp/cml
 /tmp/cml
+# Initial w: [2,2,2,2,2,2]
+# step 0: loss=0.346574  w[0] 2.000000 -> 1.996250 (grad 0.375000) cleared
+# step 1: loss=0.338594  ...
+# Final w: [1.9840, 2.0160, ...]
 echo $?  # 0
 ```
 
@@ -122,64 +129,82 @@ echo $?  # 0
 
 ```bash
 make test
-# gcc -Wall -Wextra -I. tests/test_all.c tensor.c ops.c Autograd.c memory_pool.c -lm -o /tmp/test_all && /tmp/test_all
-# 1 passed 0 failed
+# gcc -Wall -Wextra -I. tests/test_all.c tensor.c ops.c Autograd.c memory_pool.c optimizer.c -lm -o /tmp/test_all && /tmp/test_all
+# 4 passed 0 failed
 ```
 
 ### Format
 
 ```bash
-clang-format -i Main.c tensor.c tensor.h ops.c ops.h Autograd.c Autograd.h memory_pool.c memory_pool.h
-clang-format --dry-run --Werror Main.c tensor.c ops.c Autograd.c memory_pool.c
+clang-format -i Main.c tensor.c tensor.h ops.c ops.h Autograd.c Autograd.h memory_pool.c memory_pool.h optimizer.c optimizer.h tests/test_all.c
+clang-format --dry-run --Werror Main.c tensor.c ops.c Autograd.c memory_pool.c optimizer.c
 ```
 
 ---
 
 ## Usage
 
-### Minimal Example — Forward Pass
+### Phase 2 — Training with SGD (Persistent Weights)
 
 ```c
+#include "Autograd.h"
 #include "memory_pool.h"
+#include "optimizer.h"
 #include "ops.h"
 #include "tensor.h"
 
-#define N_STEPS 100
+#define N_STEPS 5
 
 int main() {
+    // Persistent weight — malloc-backed, survives pool_reset
+    Tensor *w = tensor_persistent_create((size_t[]){3, 2}, 2);
+    tensor_fill(w, 2.0f);
+    SGD *opt = sgd_create(0.01f);
+    sgd_add_param(opt, w); // sets requires_grad=true
+
     for (int step = 0; step < N_STEPS; step++) {
-        // 1. Create tensors from the pool (cheap)
         Tensor *x = tensor_create((size_t[]){2, 3}, 2);
-        Tensor *w = tensor_create((size_t[]){3, 2}, 2);
-        tensor_fill(x, 1.0f);
-        tensor_fill(w, 2.0f);
+        x->data[0]=1; x->data[1]=2; x->data[2]=3;
+        x->data[3]=4; x->data[4]=5; x->data[5]=6;
 
-        // 2. Forward
-        Tensor *logits = matmul(x, w);      // [2,3] @ [3,2] -> [2,2] filled with 6.0
-        Tensor *probs = softmax(logits, 1); // rows -> [0.5, 0.5]
+        Tensor *targets = tensor_create((size_t[]){2, 2}, 2);
+        targets->data[0]=1; targets->data[1]=0;
+        targets->data[2]=0; targets->data[3]=1;
 
-        // 3. Copy out anything to keep BEFORE reset
-        // float loss_val = loss->data[0];
+        Tensor *logits = matmul(x, w);
+        Tensor *probs = softmax(logits, 1);
+        Tensor *loss = cross_entropy_loss(probs, targets);
 
-        // 4. Reclaim all pool memory for next step
-        pool_reset(get_pool());
-        // x, w, logits, probs now INVALID
+        tensor_backward(loss); // populates w->grad (pool)
+        sgd_step(opt);        // w -= lr * grad (reads pool grad)
+        sgd_zero_grad(opt);   // w->grad=NULL (pool reclaimed next)
+        pool_reset(get_pool()); // reclaims x/logits/probs/loss/grads
     }
-    return 0;
+    tensor_persistent_free(w);
+    sgd_free(opt);
 }
 ```
 
-> **Trace:** `x=1.0`, `w=2.0` → `logits = [[6,6],[6,6]]` (1·2 summed over k=3) → `softmax` → `[[0.5,0.5],[0.5,0.5]]`.
-
-### Autograd Example
+### Phase 1 — Minimal Forward (Pool Only)
 
 ```c
-Tensor *x = tensor_create((size_t[]){2, 2}, 2);
+for (int step=0; step<100; step++) {
+    Tensor *x = tensor_create((size_t[]){2,3},2);
+    Tensor *w = tensor_create((size_t[]){3,2},2); // pool — would be wiped (use persistent for training)
+    Tensor *logits = matmul(x,w);
+    Tensor *probs = softmax(logits,1);
+    pool_reset(get_pool());
+}
+```
+
+### Autograd Standalone
+
+```c
+Tensor *x = tensor_create((size_t[]){2,2},2);
 x->requires_grad = true;
 Tensor *y = relu(x);
-Tensor *loss = cross_entropy_loss(softmax(matmul(y, w), 1), targets);
-tensor_backward(loss);
-// x.grad, w.grad now populated; read before pool_reset
+Tensor *loss = cross_entropy_loss(softmax(matmul(y,w),1), targets);
+tensor_backward(loss); // x.grad, w.grad now populated
 ```
 
 ---
@@ -188,12 +213,13 @@ tensor_backward(loss);
 
 ### 1. Memory Pool — Why an Arena?
 
-Per-step `malloc/free` for every `Tensor` fragments the heap and costs ~100 allocations/step. The pool allocates 1 GiB once (`get_pool()` lazy singleton) and bumps a `used` offset with 16-byte alignment (`(used+15)&~15`). `pool_reset` just sets `used=0` — O(1) versus O(n) frees. Tradeoff: no per-tensor `free`; `tensor_free` is a no-op — all memory is freed wholesale.
+Per-step `malloc/free` fragments and costs ~100 allocs/step. Pool allocates 1 GiB once (`get_pool()` lazy singleton) and bumps `used` with `16B` alignment `(used+15)&~15`. `pool_reset` sets `used=0` — O(1) vs O(n) frees. `tensor_free` is no-op; `tensor_persistent_create` uses `malloc` for weights that must survive resets.
 
 ```c
 MemoryPool *p = pool_create(1u << 30); // 1 GiB
 void *ptr = pool_alloc(p, bytes);       // aligned bump
-pool_reset(p);                          // rewind, don't free backing buffer
+pool_reset(p);                          // rewind, keep buffer
+Tensor *w = tensor_persistent_create(sh,2); // malloc-backed
 ```
 
 ### 2. Tensor — More Than an Array
@@ -202,19 +228,19 @@ pool_reset(p);                          // rewind, don't free backing buffer
 typedef struct Tensor {
     float *data;      // contiguous row-major
     size_t *shape;    // e.g. [2,3]
-    size_t ndim, size; // size = product(shape)
-    DType dtype;      // FLOAT32 (FLOAT64/INT reserved)
+    size_t ndim, size;
+    DType dtype;      // FLOAT32
     bool requires_grad;
-    Tensor *grad;     // dLoss/dThis
-    OpNode *grad_fn;  // producing operation
+    Tensor *grad;     // dLoss/dThis (pool-allocated)
+    OpNode *grad_fn;
 } Tensor;
 ```
 
-`tensor_create` performs 3 pool allocs (struct, shape, data) and `memset` zeros. `tensor_clone` deep-copies via `memcpy`. `tensor_print` truncates at `size>100`.
+`tensor_create` → 3 pool allocs + `memset` 0. `tensor_persistent_create` → 3 `malloc`s. `tensor_clone` → `memcpy`. `tensor_print` truncates at `size>100`.
 
 ### 3. Ops — Forward
 
-Each op validates shapes, pool-allocates `out_data` + `Tensor` + `shape`, computes, then optionally builds graph:
+Each op validates, pool-allocates `out_data`+`Tensor`+`shape`, computes, then optionally builds graph:
 
 | Op | Formula | Saved for Backward |
 |----|---------|-------------------|
@@ -224,19 +250,31 @@ Each op validates shapes, pool-allocates `out_data` + `Tensor` + `shape`, comput
 | `softmax(A,axis)` | `exp(x-max)/ Σ exp(x-max)` stable | output `p` + `axis` |
 | `cross_entropy(logits,targets)` | `- Σ t·log(clamp(p)) / N` | `logits, targets` |
 
-`requires_grad = A.requires_grad || B.requires_grad`. If true, `node_of(A/B)` memoizes leaf nodes, `opnode_create` + `opnode_save` link graph.
+`requires_grad = A.requires_grad || B.requires_grad`.
 
 ### 4. Autograd — Reverse Mode
 
-- **`OpNode`** — `{inputs, n_inputs, backward(*), grad, value, saved[], n_saved, axis, visited}`. Leaf nodes have `backward==NULL`. Graph nodes are `malloc`'d (not pooled) to survive `pool_reset` if needed.
-- **`_acc_grad(input, ng)`** — If `!input` (constant) discard; if `input->grad==NULL` steal `ng`; else elementwise `+=` (sum for multi-path reuse).
-- **Backward kernels** implement chain rule:
-  - `matmul: gA = g·Bᵀ, gB = Aᵀ·g`
-  - `add: gA=g, gB=g` (clone)
-  - `relu: g·(x>0)`
-  - `softmax: p·(g - dot)`, `dot= Σ p·g`, batched over `outer_stride`
-  - `cross_entropy: -t/(p·N)·up`, clamped `p∈[1e-7,1-1e-7]`
-- **`tensor_backward(tensor)`** — DFS `_topo` (post-order, `visited` mark, `cap*=2` growth), clear marks, seed `root->grad` with `ones` (size-matched, `1.0f`), then walk reverse order calling `backward`.
+- **`OpNode`** — `{inputs, n_inputs, backward(*), grad, value, saved[], n_saved, axis, visited}`. `malloc`'d not pooled.
+- **`_acc_grad`** — discard if `!input`, steal if `grad==NULL`, else `+=` (multi-path sum).
+- **Kernels:** `matmul: gA=g·Bᵀ, gB=Aᵀ·g`; `add: clone`; `relu: g·(x>0)`; `softmax: p·(g-dot)`; `cross_entropy: -t/(p·N)`.
+- **`tensor_backward`** — DFS `_topo` (post-order, `cap*=2`), seed `ones`, reverse walk calling `backward`.
+
+### 5. Optimizer — SGD & Persistence
+
+**Problem Phase 1:** `w` was pool-allocated → `pool_reset` wiped it, weights never learned.
+
+**Solution Phase 2:** Split lifetime:
+- **Persistent** (`tensor_persistent_create` → `malloc`) — `w`, survives resets
+- **Ephemeral** (`tensor_create` → pool) — `x`, `logits`, `probs`, `loss`, `grads`, reclaimed each step
+
+```c
+SGD *opt = sgd_create(0.01f); // {lr, params[], n_params, cap}
+sgd_add_param(opt, w);        // w->requires_grad=true, params grows via realloc
+sgd_step(opt);                // for each p: p->data[j] -= lr * p->grad->data[j]
+sgd_zero_grad(opt);           // p->grad=NULL; p->grad_fn->grad=NULL (pool memory freed by next reset)
+```
+
+Order matters: `backward → step (reads pool grad) → zero_grad (nulls) → pool_reset (reclaims)`. This is vanilla **(mini-batch) GD** — `B = x->shape[0]` batch size implicit in data, not optimizer. `B=N` → GD, `B=1` → SGD, `B=2` (current) → mini-batch GD.
 
 ---
 
@@ -246,39 +284,51 @@ Each op validates shapes, pool-allocates `out_data` + `Tensor` + `shape`, comput
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `tensor_create` | `Tensor *tensor_create(size_t *shape, size_t ndim)` | Pool-alloc Tensor, copies shape, zeros data. Returns `NULL` on OOM |
+| `tensor_create` | `Tensor *tensor_create(size_t *shape, size_t ndim)` | Pool-alloc Tensor, copies shape, zeros data. `NULL` on OOM |
+| `tensor_persistent_create` | `Tensor *tensor_persistent_create(size_t *shape, size_t ndim)` | `malloc`-backed, survives `pool_reset` |
 | `tensor_free` | `void tensor_free(Tensor *t)` | No-op — reclaimed by `pool_reset` |
-| `tensor_fill` | `void tensor_fill(Tensor *t, float v)` | Fill all `size` elements with `v` |
-| `tensor_print` | `void tensor_print(const Tensor *t)` | Print shape/dtype/requires_grad + data (truncates >100) |
-| `tensor_clone` | `Tensor *tensor_clone(const Tensor *t)` | Deep copy (new pool alloc + `memcpy`) |
+| `tensor_persistent_free` | `void tensor_persistent_free(Tensor *t)` | `free(data)+free(shape)+free(t)` |
+| `tensor_fill` | `void tensor_fill(Tensor *t, float v)` | Fill all `size` elements |
+| `tensor_print` | `void tensor_print(const Tensor *t)` | Print shape/dtype/requires_grad + data (trunc>100) |
+| `tensor_clone` | `Tensor *tensor_clone(const Tensor *t)` | Deep copy via pool + `memcpy` |
 
 ### Memory Pool (`memory_pool.h`)
 
 | Function | Description |
 |----------|-------------|
-| `pool_create(bytes)` | `malloc` backing buffer, returns `MemoryPool*` |
+| `pool_create(bytes)` | `malloc` backing buffer |
 | `pool_alloc(pool, bytes)` | 16B-aligned bump, `NULL` on OOM |
-| `pool_reset(pool)` | `used=0, alloc_count=0` — rewind, keep buffer |
-| `get_pool()` | Lazy singleton `1<<30` (1 GiB) |
+| `pool_reset(pool)` | `used=0` rewind, keep buffer |
+| `get_pool()` | Lazy singleton `1<<30` |
 
 ### Ops (`ops.h`)
 
 ```c
-Tensor *matmul(const Tensor *A, const Tensor *B);              // 2D only, k must match
+Tensor *matmul(const Tensor *A, const Tensor *B);              // 2D only
 Tensor *add(const Tensor *A, const Tensor *B);                 // size must match
 Tensor *relu(const Tensor *A);
-Tensor *softmax(const Tensor *A, int axis);                    // axis < ndim
-Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets); // size must match, returns [1]
+Tensor *softmax(const Tensor *A, int axis);
+Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets); // returns [1]
 ```
 
 ### Autograd (`Autograd.h`)
 
 ```c
 OpNode *opnode_create(OpNode **inputs, size_t n, void (*backward)(OpNode*));
-int     opnode_save(OpNode *node, Tensor *t);                  // append to saved[]
-OpNode *node_of(Tensor *t);                                   // memoize leaf
-void    tensor_backward(Tensor *loss);                        // run full backprop
-// Kernels: autograd_backward_matmul/add/relu/softmax/cross_entropy
+int     opnode_save(OpNode *node, Tensor *t);
+OpNode *node_of(Tensor *t);
+void    tensor_backward(Tensor *loss);
+```
+
+### Optimizer (`optimizer.h`)
+
+```c
+typedef struct { float lr; Tensor **params; size_t n_params; size_t cap; } SGD;
+SGD *sgd_create(float lr);
+int   sgd_add_param(SGD *opt, Tensor *param); // sets requires_grad
+void  sgd_step(SGD *opt);      // w -= lr * grad (grad is pool, w is persistent)
+void  sgd_zero_grad(SGD *opt); // nulls grad pointers before pool_reset
+void  sgd_free(SGD *opt);
 ```
 
 ---
@@ -286,15 +336,20 @@ void    tensor_backward(Tensor *loss);                        // run full backpr
 ## Training Loop & Memory Management
 
 ```
-Step N:  create pool tensors → forward → (loss → backward → optimizer) → copy out scalars/grads → pool_reset
-Step N+1: all prior Tensor* pointers are DANGLING (still inside 1 GiB but overwritten)
+Persistent: w (malloc) ─────────────────────────────── lives across steps
+Ephemeral:  x/logits/probs/loss/grads (pool) ───► pool_reset per step
 ```
 
-**Common pitfalls:**
-- Using `x` after `pool_reset` → stale data, no segfault but silent corruption.
-- Creating persistent weights inside loop (`w` per step) → weights never learn. Fix: create `w` *outside* loop or use a separate persistent pool / `malloc` for weights and only pool-allocate activations.
-- Forgetting `requires_grad=true` → `node_of` returns `NULL`, no graph, `tensor_backward` is no-op.
-- Calling `tensor_backward` twice without zeroing `grad` → gradients accumulate (double).
+```
+Step:  create pool x → forward → backward → sgd_step (reads pool grad) → sgd_zero_grad → pool_reset
+Next:  prior pool Tensor* are DANGLING (still in 1 GiB but overwritten), w persists
+```
+
+**Pitfalls:**
+- Using `x` after `pool_reset` → silent corruption.
+- `w` as pool inside loop → wiped (use `tensor_persistent_create` outside loop).
+- Missing `requires_grad=true` or `sgd_add_param` → no grad, `backward` no-op.
+- `backward` twice without `zero_grad` → grad accumulates (double).
 
 ---
 
@@ -304,9 +359,9 @@ Step N+1: all prior Tensor* pointers are DANGLING (still inside 1 GiB but overwr
 make test
 ```
 
-- Harness `tests/test_all.c` — custom macros `TEST`/`ASSERT`/`ASSERT_CLOSE` (no external deps), `pool_reset(get_pool())` per test, `passed/failed` summary, exit code `failed?1:0`.
-- Current: `tensor_create_and_fill` (shape/size/fill).  
-- Recommended next tests: `matmul` known answer (`[[1,2,3]]@[1;1;1]=6`), `softmax` rows sum 1, pool OOM/align, `relu` backward mask, `matmul` backward numerical grad check.
+- Harness `tests/test_all.c` — `TEST`/`ASSERT`/`ASSERT_CLOSE`, `pool_reset` per test, `passed/failed` summary.
+- **4 tests:** `tensor_create_and_fill` (shape/fill), `persistent_survives_pool_reset` (malloc survives pool reset), `sgd_step_basic` (1→0.95 with grad 0.5 lr0.1), `end_to_end_training_step` (full forward→backward→step, loss 0.34, weight moves).
+- Next: `matmul` known answer, `softmax` rows sum 1, numerical grad check, pool OOM/align.
 
 ---
 
@@ -327,28 +382,28 @@ make test
 **Phase 1 — Complete ✅**
 - [x] `tensor.c` — `tensor_create`, `tensor_free`, `tensor_fill`, `tensor_print`, `tensor_clone`
 - [x] `ops.c` — `matmul`, `add`, `relu`, `softmax`, `cross_entropy_loss`
-- [x] `Autograd.c` — `OpNode` creation and backward graph traversal (`_topo`/`tensor_backward`)
+- [x] `Autograd.c` — `OpNode` creation and backward graph traversal
 - [x] `memory_pool.c` — `pool_create`, `pool_alloc`, `pool_reset`, `get_pool` (1 GiB)
-- [x] Integrate pool into `tensor.c`/`ops.c` (replace `malloc/calloc`)
-- [x] Refactor `Main.c` to `Tensor` API (remove `int mat1[2][3]`)
+- [x] Integrate pool into `tensor.c`/`ops.c`
+- [x] Refactor `Main.c` to `Tensor` API
 - [x] Add tests (`make test`)
 - [x] Format codebase
 
-**Phase 2 — Planned**
-- [ ] Optimizer (`SGD` / `Adam`: `w -= lr * grad`)
-- [ ] Weight persistence across `pool_reset` (dual pool or `malloc` for parameters)
+**Phase 2 — In Progress**
+- [x] **Optimizer** — `SGD` vanilla GD `w -= lr*grad`, `sgd_step`/`sgd_zero_grad` (`optimizer.h/c`)
+- [x] **Weight persistence** — `tensor_persistent_create` / `tensor_persistent_free` (malloc vs pool), demo loss `0.346 → 0.323`
+- [x] Expand tests to 4 (`persistent`, `sgd_step`, `end_to_end`)
 - [ ] Random initialization (`randn` / `xavier`)
 - [ ] `Linear` / `Module` abstraction
-- [ ] Additional ops (`broadcast_add`, `conv2d`) and `opnode_free`
-- [ ] Numerical gradient checks & expanded test suite
-- [ ] Data loader & training on real dataset (e.g., MNIST)
+- [ ] Adam (`m/v` moments), additional ops (`broadcast_add`, `conv2d`), `opnode_free`
+- [ ] DataLoader (`batch_size`, `shuffle`) & training on real dataset (MNIST/XOR)
 
 ---
 
 ## Contributing
 
-1. Branch from `main`, write a failing test in `tests/test_all.c`
-2. Implement, ensure `make test` and `gcc -Wall -Wextra ... -lm` pass
+1. Branch from `main`, write failing test in `tests/test_all.c`
+2. Implement, ensure `make test` (4 passed) and `gcc -Wall -Wextra ... -lm` pass
 3. Format: `clang-format -i` (CI checks `--dry-run --Werror`)
 4. Commit with conventional message, push, open PR
 

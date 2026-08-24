@@ -1,5 +1,7 @@
+#include "Autograd.h"
 #include "memory_pool.h"
 #include "ops.h"
+#include "optimizer.h"
 #include "tensor.h"
 
 #include <assert.h>
@@ -28,8 +30,103 @@ TEST(tensor_create_and_fill) {
         ASSERT_CLOSE(t->data[i], 2.5f, 1e-6);
     passed++;
 }
+
+TEST(persistent_survives_pool_reset) {
+    pool_reset(get_pool());
+    size_t sh[2] = {2, 2};
+    Tensor *w = tensor_persistent_create(sh, 2);
+    tensor_fill(w, 3.0f);
+    w->requires_grad = true;
+    Tensor *tmp = tensor_create(sh, 2);
+    tensor_fill(tmp, 1.0f);
+    ASSERT(w->data[0] == 3.0f);
+    pool_reset(get_pool());
+    // tmp is invalid after reset, w must survive
+    ASSERT(w->data[0] == 3.0f);
+    ASSERT(w->data[3] == 3.0f);
+    tensor_persistent_free(w);
+    passed++;
+}
+
+TEST(sgd_step_basic) {
+    pool_reset(get_pool());
+    size_t sh[2] = {1, 2};
+    Tensor *w = tensor_persistent_create(sh, 2);
+    w->data[0] = 1.0f;
+    w->data[1] = 2.0f;
+    w->requires_grad = true;
+    SGD *opt = sgd_create(0.1f);
+    sgd_add_param(opt, w);
+    // Fake grad as if backward produced [0.5, -0.5]
+    size_t gsh[2] = {1, 2};
+    Tensor *g = tensor_create(gsh, 2);
+    g->data[0] = 0.5f;
+    g->data[1] = -0.5f;
+    w->grad = g;
+    if (w->grad_fn)
+        w->grad_fn->grad = g;
+    else {
+        // ensure node exists for zero_grad path
+        w->grad_fn = node_of(w);
+        if (w->grad_fn)
+            w->grad_fn->grad = g;
+    }
+    sgd_step(opt);
+    ASSERT_CLOSE(w->data[0], 0.95f, 1e-6); // 1 - 0.1*0.5
+    ASSERT_CLOSE(w->data[1], 2.05f, 1e-6); // 2 - 0.1*(-0.5)
+    sgd_zero_grad(opt);
+    ASSERT(w->grad == NULL);
+    sgd_free(opt);
+    tensor_persistent_free(w);
+    pool_reset(get_pool());
+    passed++;
+}
+
+TEST(end_to_end_training_step) {
+    pool_reset(get_pool());
+    size_t sh_w[2] = {3, 2};
+    Tensor *w = tensor_persistent_create(sh_w, 2);
+    tensor_fill(w, 2.0f);
+    w->requires_grad = true;
+    SGD *opt = sgd_create(0.01f);
+    sgd_add_param(opt, w);
+    float w0_before = w->data[0];
+    // One training step similar to Main.c
+    Tensor *x = tensor_create((size_t[]){2, 3}, 2);
+    x->data[0] = 1;
+    x->data[1] = 2;
+    x->data[2] = 3;
+    x->data[3] = 4;
+    x->data[4] = 5;
+    x->data[5] = 6;
+    Tensor *targets = tensor_create((size_t[]){2, 2}, 2);
+    targets->data[0] = 1;
+    targets->data[1] = 0;
+    targets->data[2] = 0;
+    targets->data[3] = 1;
+    Tensor *logits = matmul(x, w);
+    Tensor *probs = softmax(logits, 1);
+    Tensor *loss = cross_entropy_loss(probs, targets);
+    ASSERT(loss != NULL);
+    float loss_before = loss->data[0];
+    tensor_backward(loss);
+    ASSERT(w->grad != NULL);
+    sgd_step(opt);
+    ASSERT(w->data[0] != w0_before); // weight moved
+    sgd_zero_grad(opt);
+    ASSERT(w->grad == NULL);
+    pool_reset(get_pool());
+    // w survives, loss computed before reset is captured
+    ASSERT(loss_before > 0.3f && loss_before < 0.4f);
+    sgd_free(opt);
+    tensor_persistent_free(w);
+    passed++;
+}
 int main() {
     test_tensor_create_and_fill();
+    test_persistent_survives_pool_reset();
+    test_sgd_step_basic();
+    test_end_to_end_training_step();
     printf("%d passed %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

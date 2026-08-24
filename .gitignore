@@ -1,0 +1,9 @@
+*.o
+*.a
+*.so
+/tmp/
+main
+cml
+.DS_Store
+.vscode/
+.idea/

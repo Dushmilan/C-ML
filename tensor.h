@@ -27,4 +27,9 @@ void tensor_fill(Tensor *tensor, float value);
 void tensor_print(const Tensor *tensor);
 Tensor *tensor_clone(const Tensor *tensor);
 
+// Persistent tensors survive pool_reset (malloc-backed)
+// Use tensor_persistent_free to release them
+Tensor *tensor_persistent_create(size_t *shape, size_t ndim);
+void tensor_persistent_free(Tensor *tensor);
+
 #endif

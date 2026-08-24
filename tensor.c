@@ -91,6 +91,51 @@ void tensor_print(const Tensor *tensor) {
     }
 }
 
+// Persistent tensor: malloc-backed, survives pool_reset
+
+Tensor *tensor_persistent_create(size_t *shape, size_t ndim) {
+    Tensor *tensor = (Tensor *)malloc(sizeof(Tensor));
+    if (!tensor)
+        return NULL;
+
+    tensor->ndim = ndim;
+    tensor->shape = (size_t *)malloc(ndim * sizeof(size_t));
+    if (!tensor->shape) {
+        free(tensor);
+        return NULL;
+    }
+
+    tensor->size = 1;
+    for (size_t i = 0; i < ndim; i++) {
+        tensor->shape[i] = shape[i];
+        tensor->size *= shape[i];
+    }
+
+    tensor->dtype = FLOAT32;
+    tensor->requires_grad = false;
+    tensor->grad = NULL;
+    tensor->grad_fn = NULL;
+    tensor->data = (float *)malloc(tensor->size * sizeof(float));
+    if (!tensor->data) {
+        free(tensor->shape);
+        free(tensor);
+        return NULL;
+    }
+
+    memset(tensor->data, 0, tensor->size * sizeof(float));
+    return tensor;
+}
+
+void tensor_persistent_free(Tensor *t) {
+    if (!t)
+        return;
+    free(t->data);
+    free(t->shape);
+    // Note: grad and grad_fn may be pool-allocated — do not free here.
+    // Caller should clear grad before free or ensure it was pool-reset.
+    free(t);
+}
+
 // tensor_clone: deep-copy a tensor (new memory, same values)
 
 Tensor *tensor_clone(const Tensor *tensor) {
