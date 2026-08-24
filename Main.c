@@ -1,23 +1,20 @@
+#include "memory_pool.h"
 #include "ops.h"
 #include "tensor.h"
-#include "memory_pool.h"
-
 
 #define N_STEPS 100
 
-
 int main() {
-   for (int step = 0; step < N_STEPS; step++) {
-
+    for (int step = 0; step < N_STEPS; step++) {
         // 1. Create this step's tensors (cheap — they come from the pool)
-        Tensor* x = tensor_create((size_t[]){2, 3}, 2);
-        Tensor* w = tensor_create((size_t[]){3, 2}, 2);
+        Tensor *x = tensor_create((size_t[]){2, 3}, 2);
+        Tensor *w = tensor_create((size_t[]){3, 2}, 2);
         tensor_fill(x, 1.0f);
         tensor_fill(w, 2.0f);
 
         // 2. Forward pass
-        Tensor* logits = matmul(x, w);
-        Tensor* probs  = softmax(logits, 1);
+        Tensor *logits = matmul(x, w);
+        Tensor *probs = softmax(logits, 1);
         // ... loss, backward, weight update, etc.
 
         // 3. COPY OUT anything you must keep BEFORE resetting
@@ -30,4 +27,3 @@ int main() {
     }
     return 0;
 }
-

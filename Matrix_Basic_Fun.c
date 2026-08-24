@@ -1,10 +1,6 @@
 #include <stdio.h>
 
-
 // Matrix multiplication
-
-
-
 
 void displayMatrix(int rows, int cols, int matrix[rows][cols]) {
     for (int i = 0; i < rows; i++) {
@@ -14,4 +10,3 @@ void displayMatrix(int rows, int cols, int matrix[rows][cols]) {
         printf("\n");
     }
 }
-

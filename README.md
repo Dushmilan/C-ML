@@ -8,5 +8,5 @@ TODOs:
 - [x] memory_pool.c: implement pool_create, pool_alloc, pool_reset
 - [x] Integrate memory pool into tensor.c (replace malloc/calloc)
 - [x] Refactor Main.c to use Tensor API instead of int mat1[2][3]
-- [ ] Add tests for tensor operations
+- [x] Add tests for tensor operations
 */

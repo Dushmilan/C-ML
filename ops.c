@@ -1,13 +1,16 @@
 #include "ops.h"
-#include "memory_pool.h"
-#include"tensor.h"
-#include"Autograd.h"
-#include <stdio.h>
-#include<stdlib.h>
-#include <math.h>
 
-Tensor* matmul(const Tensor* A, const Tensor* B) {
-    if (!A || !B || !A->data || !B->data) return NULL;
+#include "Autograd.h"
+#include "memory_pool.h"
+#include "tensor.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+Tensor *matmul(const Tensor *A, const Tensor *B) {
+    if (!A || !B || !A->data || !B->data)
+        return NULL;
 
     // For matrix multiplication, expect 2D tensors: (m, k) * (k, n) -> (m, n)
     if (A->ndim != 2 || B->ndim != 2) {
@@ -26,8 +29,9 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
     }
 
     size_t total = m * n;
-    float* out_data = (float*)pool_alloc(get_pool(), total * sizeof(float));
-    if (!out_data) return NULL;
+    float *out_data = (float *)pool_alloc(get_pool(), total * sizeof(float));
+    if (!out_data)
+        return NULL;
 
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
@@ -39,12 +43,14 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
         }
     }
 
-    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
-    if (!result) return NULL;
+    Tensor *result = (Tensor *)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result)
+        return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)pool_alloc(get_pool(), 2 * sizeof(size_t));
-    if (!result->shape) return NULL;
+    result->shape = (size_t *)pool_alloc(get_pool(), 2 * sizeof(size_t));
+    if (!result->shape)
+        return NULL;
     result->shape[0] = m;
     result->shape[1] = n;
     result->ndim = 2;
@@ -54,12 +60,12 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
     result->grad = NULL;
 
     if (result->requires_grad) {
-        OpNode* in[2] = { node_of((Tensor*)A), node_of((Tensor*)B) };
-        OpNode* node = opnode_create(in, 2, autograd_backward_matmul);
+        OpNode *in[2] = {node_of((Tensor *)A), node_of((Tensor *)B)};
+        OpNode *node = opnode_create(in, 2, autograd_backward_matmul);
         if (node) {
             node->value = result;
-            opnode_save(node, (Tensor*)A);
-            opnode_save(node, (Tensor*)B);
+            opnode_save(node, (Tensor *)A);
+            opnode_save(node, (Tensor *)B);
             result->grad_fn = node;
         }
     }
@@ -67,28 +73,30 @@ Tensor* matmul(const Tensor* A, const Tensor* B) {
     return result;
 }
 
-
-Tensor* add(const Tensor* A, const Tensor* B){
-    if (!A || !B || !A->data || !B->data) return NULL;
+Tensor *add(const Tensor *A, const Tensor *B) {
+    if (!A || !B || !A->data || !B->data)
+        return NULL;
 
     if (A->size != B->size) {
         fprintf(stderr, "add: tensor size mismatch (%zu vs %zu)\n", A->size, B->size);
         return NULL;
     }
 
-    float* out_data = (float*)pool_alloc(get_pool(), A->size * sizeof(float));
-    if (!out_data) return NULL;
+    float *out_data = (float *)pool_alloc(get_pool(), A->size * sizeof(float));
+    if (!out_data)
+        return NULL;
 
-    for (size_t i = 0; i < A->size; i++)
-    {
+    for (size_t i = 0; i < A->size; i++) {
         out_data[i] = A->data[i] + B->data[i];
     }
-    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
-    if (!result) return NULL;
+    Tensor *result = (Tensor *)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result)
+        return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)pool_alloc(get_pool(), A->ndim*sizeof(size_t));
-    if (!result->shape) return NULL;
+    result->shape = (size_t *)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
+    if (!result->shape)
+        return NULL;
 
     for (size_t i = 0; i < A->ndim; i++) {
         result->shape[i] = A->shape[i];
@@ -100,8 +108,8 @@ Tensor* add(const Tensor* A, const Tensor* B){
     result->grad = NULL;
 
     if (result->requires_grad) {
-        OpNode* in[2] = { node_of((Tensor*)A), node_of((Tensor*)B) };
-        OpNode* node = opnode_create(in, 2, autograd_backward_add);
+        OpNode *in[2] = {node_of((Tensor *)A), node_of((Tensor *)B)};
+        OpNode *node = opnode_create(in, 2, autograd_backward_add);
         if (node) {
             node->value = result;
             result->grad_fn = node;
@@ -111,23 +119,26 @@ Tensor* add(const Tensor* A, const Tensor* B){
     return result;
 }
 
+Tensor *relu(const Tensor *A) {
+    if (!A || !A->data)
+        return NULL;
 
-Tensor* relu(const Tensor* A){
-    if (!A || !A->data) return NULL;
+    float *out_data = (float *)pool_alloc(get_pool(), A->size * sizeof(float));
+    if (!out_data)
+        return NULL;
 
-    float* out_data = (float*)pool_alloc(get_pool(), A->size * sizeof(float));
-    if (!out_data) return NULL;
-    
     for (size_t i = 0; i < A->size; i++) {
         out_data[i] = A->data[i] > 0.0f ? A->data[i] : 0.0f;
     }
 
-    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
-    if (!result) return NULL; 
+    Tensor *result = (Tensor *)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result)
+        return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
-    if (!result->shape) return NULL; 
+    result->shape = (size_t *)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
+    if (!result->shape)
+        return NULL;
 
     for (size_t i = 0; i < A->ndim; i++) {
         result->shape[i] = A->shape[i];
@@ -139,11 +150,11 @@ Tensor* relu(const Tensor* A){
     result->grad = NULL;
 
     if (result->requires_grad) {
-        OpNode* node = opnode_create(NULL, 1, autograd_backward_relu);
+        OpNode *node = opnode_create(NULL, 1, autograd_backward_relu);
         if (node) {
             node->value = result;
-            node->inputs[0] = node_of((Tensor*)A);
-            opnode_save(node, (Tensor*)A);
+            node->inputs[0] = node_of((Tensor *)A);
+            opnode_save(node, (Tensor *)A);
             result->grad_fn = node;
         }
     }
@@ -151,12 +162,14 @@ Tensor* relu(const Tensor* A){
     return result;
 }
 
-Tensor* softmax(const Tensor* A, int axis){
-    if (!A || !A->data || axis < 0 || (size_t)axis >= A->ndim) return NULL;
+Tensor *softmax(const Tensor *A, int axis) {
+    if (!A || !A->data || axis < 0 || (size_t)axis >= A->ndim)
+        return NULL;
 
     size_t axis_size = A->shape[axis];
-    float* out_data = (float*)pool_alloc(get_pool(), A->size * sizeof(float));
-    if (!out_data) return NULL;
+    float *out_data = (float *)pool_alloc(get_pool(), A->size * sizeof(float));
+    if (!out_data)
+        return NULL;
 
     // Compute stride for the axis
     size_t stride = 1;
@@ -170,7 +183,8 @@ Tensor* softmax(const Tensor* A, int axis){
         // Find max for numerical stability
         float max_val = A->data[i];
         for (size_t j = 1; j < axis_size; j++) {
-            if (A->data[i + j] > max_val) max_val = A->data[i + j];
+            if (A->data[i + j] > max_val)
+                max_val = A->data[i + j];
         }
 
         // Compute exp and sum
@@ -188,12 +202,14 @@ Tensor* softmax(const Tensor* A, int axis){
         }
     }
 
-    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
-    if (!result) return NULL; 
+    Tensor *result = (Tensor *)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result)
+        return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
-    if (!result->shape) return NULL; 
+    result->shape = (size_t *)pool_alloc(get_pool(), A->ndim * sizeof(size_t));
+    if (!result->shape)
+        return NULL;
 
     for (size_t i = 0; i < A->ndim; i++) {
         result->shape[i] = A->shape[i];
@@ -205,44 +221,49 @@ Tensor* softmax(const Tensor* A, int axis){
     result->grad = NULL;
 
     if (result->requires_grad) {
-        OpNode* node = opnode_create(NULL, 1, autograd_backward_softmax);
+        OpNode *node = opnode_create(NULL, 1, autograd_backward_softmax);
         if (node) {
             node->value = result;
             node->axis = axis;
-            node->inputs[0] = node_of((Tensor*)A);
+            node->inputs[0] = node_of((Tensor *)A);
             opnode_save(node, result);
             result->grad_fn = node;
         }
     }
 
     return result;
-
 }
 
+Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets) {
+    if (!logits || !targets || !logits->data || !targets->data)
+        return NULL;
+    if (logits->size != targets->size)
+        return NULL;
 
-Tensor* cross_entropy_loss(const Tensor* logits, const Tensor* targets) {
-    if (!logits || !targets || !logits->data || !targets->data) return NULL;
-    if (logits->size != targets->size) return NULL;
-
-    float* out_data = (float*)pool_alloc(get_pool(), sizeof(float));
-    if (!out_data) return NULL;
+    float *out_data = (float *)pool_alloc(get_pool(), sizeof(float));
+    if (!out_data)
+        return NULL;
 
     float loss = 0.0f;
     for (size_t i = 0; i < logits->size; i++) {
         float p = logits->data[i];
         // Clamp to avoid log(0)
-        if (p < 1e-7f) p = 1e-7f;
-        if (p > 1.0f - 1e-7f) p = 1.0f - 1e-7f;
+        if (p < 1e-7f)
+            p = 1e-7f;
+        if (p > 1.0f - 1e-7f)
+            p = 1.0f - 1e-7f;
         loss -= targets->data[i] * logf((double)p);
     }
     out_data[0] = loss / (float)logits->size;
 
-    Tensor* result = (Tensor*)pool_alloc(get_pool(), sizeof(Tensor));
-    if (!result) return NULL; 
+    Tensor *result = (Tensor *)pool_alloc(get_pool(), sizeof(Tensor));
+    if (!result)
+        return NULL;
 
     result->data = out_data;
-    result->shape = (size_t*)pool_alloc(get_pool(), sizeof(size_t));
-    if (!result->shape) return NULL; 
+    result->shape = (size_t *)pool_alloc(get_pool(), sizeof(size_t));
+    if (!result->shape)
+        return NULL;
     result->shape[0] = 1;
     result->ndim = 1;
     result->size = 1;
@@ -251,12 +272,12 @@ Tensor* cross_entropy_loss(const Tensor* logits, const Tensor* targets) {
     result->grad = NULL;
 
     if (result->requires_grad) {
-        OpNode* in[2] = { node_of((Tensor*)logits), node_of((Tensor*)targets) };
-        OpNode* node = opnode_create(in, 2, autograd_backward_cross_entropy);
+        OpNode *in[2] = {node_of((Tensor *)logits), node_of((Tensor *)targets)};
+        OpNode *node = opnode_create(in, 2, autograd_backward_cross_entropy);
         if (node) {
             node->value = result;
-            opnode_save(node, (Tensor*)logits);
-            opnode_save(node, (Tensor*)targets);
+            opnode_save(node, (Tensor *)logits);
+            opnode_save(node, (Tensor *)targets);
             result->grad_fn = node;
         }
     }
