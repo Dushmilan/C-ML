@@ -6,6 +6,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <time.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+
 /*
  * tensor_create: allocate and initialize a Tensor on the heap.
  * Parameters:
@@ -151,4 +158,69 @@ Tensor *tensor_clone(const Tensor *tensor) {
     memcpy(clone->data, tensor->data, tensor->size * sizeof(float));
 
     return clone;
+}
+
+
+static int have_next_gaussian = 0;
+static float next_gaussian;
+
+static float randn(void) {
+
+    if (have_next_gaussian){
+        have_next_gaussian = 0;
+        return next_gaussian;
+    }
+    float u1 = ((float)rand() / RAND_MAX);
+    float u2 = ((float)rand() / RAND_MAX);
+    // Avoid log(0)
+
+    float r = sqrtf(-2.0f * logf(u1<1e-9f ? 1e-9f : u1));
+    float theta = 2.0f * (float)M_PI * u2;
+
+    next_gaussian = r * cosf(theta);
+    have_next_gaussian = 1;
+    return r * sinf(theta);
+}
+
+static float rand_uniform(void){
+    return (float)rand() / RAND_MAX;
+}
+
+Tensor *tensor_randn(size_t *shape, size_t ndim) {
+    Tensor *t = tensor_create(shape, ndim);
+    if (!t) return NULL;
+    for (size_t i = 0; i < t->size; i++)
+        t->data[i] = randn();
+    return t;
+}
+
+Tensor *tensor_xavier_uniform(size_t *shape, size_t ndim) {
+    Tensor *t = tensor_create(shape, ndim);
+    if (!t || ndim != 2) return t;
+    size_t fan_in = shape[1];
+    size_t fan_out = shape[0];
+    float a = sqrtf(6.0f / ((float)(fan_in + fan_out)));
+    for (size_t i = 0; i < t->size; i++)
+        t->data[i] = rand_uniform() * 2.0f * a - a; // U(-a, a)
+    return t;
+}
+
+Tensor *tensor_xavier_normal(size_t *shape, size_t ndim) {
+    Tensor *t = tensor_create(shape, ndim);
+    if (!t || ndim != 2) return t;
+    size_t fan_in = shape[1];
+    size_t fan_out = shape[0];
+    float std = sqrtf(2.0f / ((float)(fan_in + fan_out)));
+    for (size_t i = 0; i < t->size; i++)
+        t->data[i] = randn() * std;
+    return t;
+}
+
+Tensor *tensor_xavier_uniform_fan(size_t fan_in, size_t fan_out) {
+    size_t shape[2] = {fan_out, fan_in};
+    return tensor_xavier_uniform(shape, 2);
+}
+void tensor_random_seed(unsigned int seed) {
+    srand(seed);
+    have_next_gaussian = 0;
 }

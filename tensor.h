@@ -32,4 +32,11 @@ Tensor *tensor_clone(const Tensor *tensor);
 Tensor *tensor_persistent_create(size_t *shape, size_t ndim);
 void tensor_persistent_free(Tensor *tensor);
 
+// Random initialization (returns pool tensor; wrap with persistent_create for weights)
+Tensor *tensor_randn(size_t *shape, size_t ndim);           // std normal ~N(0,1)
+Tensor *tensor_xavier_uniform(size_t *shape, size_t ndim); // U(-a, a), a = sqrt(6/(fan_in+fan_out))
+Tensor *tensor_xavier_normal(size_t *shape, size_t ndim);  // N(0, std^2), std = sqrt(2/(fan_in+fan_out))
+Tensor *tensor_xavier_uniform_fan(size_t fan_in, size_t fan_out);
+void tensor_random_seed(unsigned int seed);
+
 #endif

@@ -9,9 +9,11 @@
 #define N_STEPS 5
 
 int main() {
+    tensor_random_seed(42);
     // Persistent weight — survives pool_reset, updated by SGD
+    Tensor *w_init = tensor_xavier_uniform((size_t[]){3, 2}, 2);
     Tensor *w = tensor_persistent_create((size_t[]){3, 2}, 2);
-    tensor_fill(w, 2.0f);
+    memcpy(w->data, w_init->data, 3 * 2 * sizeof(float));
     w->requires_grad = true;
 
     SGD *opt = sgd_create(0.01f);
@@ -70,5 +72,7 @@ int main() {
 
     tensor_persistent_free(w);
     sgd_free(opt);
+    test_randn_basic();
+    test_xavier_uniform_2d();
     return 0;
 }

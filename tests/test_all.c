@@ -122,11 +122,61 @@ TEST(end_to_end_training_step) {
     tensor_persistent_free(w);
     passed++;
 }
+TEST(randn_basic) {
+    pool_reset(get_pool());
+    tensor_random_seed(12345);
+    size_t sh[2] = {1000, 1};
+    Tensor *t = tensor_randn(sh, 2);
+    ASSERT(t && t->size == 1000);
+    float sum = 0.0f, sumsq = 0.0f;
+    for (size_t i = 0; i < 1000; i++) {
+        sum += t->data[i];
+        sumsq += t->data[i] * t->data[i];
+    }
+    float mean = sum / 1000.0f;
+    float var = sumsq / 1000.0f - mean * mean;
+    ASSERT(fabsf(mean) < 0.1f);       // roughly zero
+    ASSERT(fabsf(var - 1.0f) < 0.1f); // roughly unit variance
+    passed++;
+}
+
+TEST(xavier_uniform_2d) {
+    pool_reset(get_pool());
+    tensor_random_seed(12345);
+    size_t sh[2] = {64, 128};
+    Tensor *t = tensor_xavier_uniform(sh, 2);
+    ASSERT(t && t->size == 64 * 128);
+    float max_val = 0.0f;
+    for (size_t i = 0; i < t->size; i++)
+        if (fabsf(t->data[i]) > max_val) max_val = fabsf(t->data[i]);
+    float a = sqrtf(6.0f / ((float)(64 + 128)));
+    ASSERT(max_val <= a + 1e-6f);
+    passed++;
+}
+
+TEST(xavier_normal_2d) {
+    pool_reset(get_pool());
+    tensor_random_seed(12345);
+    size_t sh[2] = {64, 128};
+    Tensor *t = tensor_xavier_normal(sh, 2);
+    ASSERT(t && t->size == 64 * 128);
+    float sumsq = 0.0f;
+    for (size_t i = 0; i < t->size; i++)
+        sumsq += t->data[i] * t->data[i];
+    float std = sqrtf(sumsq / (64 * 128));
+    float expected_std = sqrtf(2.0f / ((float)(64 + 128)));
+    ASSERT(fabsf(std - expected_std) < 0.05f);
+    passed++;
+}
+
 int main() {
     test_tensor_create_and_fill();
     test_persistent_survives_pool_reset();
     test_sgd_step_basic();
     test_end_to_end_training_step();
+    test_randn_basic();
+    test_xavier_uniform_2d();
+    test_xavier_normal_2d();
     printf("%d passed %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
