@@ -1,4 +1,5 @@
 #include "Autograd.h"
+#include "Module/module.h"
 #include "memory_pool.h"
 #include "ops.h"
 #include "optimizer.h"
@@ -7,6 +8,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static int passed = 0, failed = 0;
 #define TEST(name) void test_##name()
@@ -169,6 +171,86 @@ TEST(xavier_normal_2d) {
     passed++;
 }
 
+TEST(broadcast_add_forward_bias_row) {
+    pool_reset(get_pool());
+    size_t shB[2] = {5, 3};
+    Tensor *B = tensor_create(shB, 2);
+    for (size_t i = 0; i < 15; i++) B->data[i] = (float)(int)i;
+    size_t shA[1] = {3};
+    Tensor *A = tensor_create(shA, 1);
+    A->data[0] = 10.0f; A->data[1] = 20.0f; A->data[2] = 30.0f;
+
+    Tensor *C = broadcast_add(A, B);
+    ASSERT(C && C->ndim == 2 && C->shape[0] == 5 && C->shape[1] == 3);
+    ASSERT_CLOSE(C->data[0], 10.0f + 0.0f, 1e-5f);
+    ASSERT_CLOSE(C->data[1], 20.0f + 1.0f, 1e-5f);
+    ASSERT_CLOSE(C->data[2], 30.0f + 2.0f, 1e-5f);
+    ASSERT_CLOSE(C->data[3], 10.0f + 3.0f, 1e-5f);
+    ASSERT_CLOSE(C->data[4], 20.0f + 4.0f, 1e-5f);
+    pool_reset(get_pool());
+    passed++;
+}
+
+TEST(linear_create_and_forward) {
+    pool_reset(get_pool());
+    Linear *l = linear_create(4, 3, true);
+    ASSERT(l && l->W && l->b);
+    ASSERT(l->W->ndim == 2 && l->W->shape[0] == 4 && l->W->shape[1] == 3);
+    ASSERT(l->b->ndim == 1 && l->b->shape[0] == 3);
+    ASSERT(l->W->requires_grad && l->b->requires_grad);
+
+    size_t shx[2] = {5, 4};
+    Tensor *x = tensor_create(shx, 2);
+    for (size_t i = 0; i < 20; i++) x->data[i] = (float)(int)i;
+
+    Tensor *y = l->base.forward(&l->base, x);
+    ASSERT(y && y->ndim == 2 && y->shape[0] == 5 && y->shape[1] == 3);
+    pool_reset(get_pool());
+    linear_free(l);
+    passed++;
+}
+
+TEST(linear_end_to_end_gradients) {
+    pool_reset(get_pool());
+    Linear *l = linear_create(3, 2, true);
+    ASSERT(l && l->W && l->b);
+
+    Tensor **params; size_t n;
+    module_parameters(&l->base, &params, &n);
+    ASSERT(n == 2);
+    SGD *opt = sgd_create(0.1f);
+    for (size_t i = 0; i < n; i++) sgd_add_param(opt, params[i]);
+    free(params);
+
+    float w00_before = l->W->data[0];
+    Tensor *x = tensor_create((size_t[]){2, 3}, 2);
+    x->data[0] = 1; x->data[1] = 2; x->data[2] = 3;
+    x->data[3] = 4; x->data[4] = 5; x->data[5] = 6;
+
+    Tensor *t = tensor_create((size_t[]){2, 2}, 2);
+    t->data[0] = 1; t->data[1] = 0;
+    t->data[2] = 0; t->data[3] = 1;
+
+    Tensor *y = l->base.forward(&l->base, x);
+    Tensor *probs = softmax(y, 1);
+    Tensor *loss = cross_entropy_loss(probs, t);
+    ASSERT(loss != NULL);
+    tensor_backward(loss);
+    ASSERT(l->W->grad != NULL);
+    ASSERT(l->b->grad != NULL);
+
+    sgd_step(opt);
+    ASSERT(l->W->data[0] != w00_before);
+    sgd_zero_grad(opt);
+    ASSERT(l->W->grad == NULL);
+    ASSERT(l->b->grad == NULL);
+
+    pool_reset(get_pool());
+    linear_free(l);
+    sgd_free(opt);
+    passed++;
+}
+
 int main() {
     test_tensor_create_and_fill();
     test_persistent_survives_pool_reset();
@@ -177,6 +259,9 @@ int main() {
     test_randn_basic();
     test_xavier_uniform_2d();
     test_xavier_normal_2d();
+    test_broadcast_add_forward_bias_row();
+    test_linear_create_and_forward();
+    test_linear_end_to_end_gradients();
     printf("%d passed %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

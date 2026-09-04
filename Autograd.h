@@ -16,6 +16,12 @@ typedef struct OpNode {
     size_t n_saved;
     int axis;    // Operation-specific axis, e.g. softmax
     int visited; // Temporary topological-sort marker
+
+    // Broadcast metadata (broadcast_add)
+    size_t bcast_ndim;
+    size_t bcast_shape[8];
+    size_t bcast_stra[8];
+    size_t bcast_strb[8];
 } OpNode;
 
 OpNode *opnode_create(OpNode **inputs, size_t n_inputs, void (*backward)(OpNode *));
@@ -27,6 +33,7 @@ void autograd_backward_add(OpNode *node);
 void autograd_backward_relu(OpNode *node);
 void autograd_backward_softmax(OpNode *node);
 void autograd_backward_cross_entropy(OpNode *node);
+void autograd_backward_broadcast_add(OpNode *node);
 
 void tensor_backward(Tensor *tensor); // Triggers full backprop
 

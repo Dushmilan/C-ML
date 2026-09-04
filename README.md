@@ -20,7 +20,7 @@
 - **Autograd** — dynamic computation graph with reverse-mode backprop and topological sort
 - **Optimizer** — vanilla **SGD** (`w -= lr * grad`) with `zero_grad` and persistent weight support
 
-Phase 1 is **complete** (tensor/pool/ops/autograd). Phase 2 **optimizer is complete** — training now actually learns (`loss 0.346 → 0.323` in 5 steps). Next: init, modules, Adam, DataLoader.
+Phase 1 is **complete** (tensor/pool/ops/autograd). Phase 2 **optimizer is complete** — training now actually learns. Phase 2 **random initialization is complete** (Xavier/randn). Next: modules, Adam, DataLoader.
 
 Framework is intentionally minimal and readable — ideal for learning how tensors, memory, and backprop actually work under the hood.
 
@@ -53,7 +53,7 @@ Framework is intentionally minimal and readable — ideal for learning how tenso
 | **Ops (Forward)** | `matmul` (2D, O(m·k·n)), `add` (elementwise), `relu`, `softmax` (stable, arbitrary axis), `cross_entropy_loss` (mean, clamped) |
 | **Autograd (Backward)** | Per-op `backward` kernels, gradient accumulation (`_acc_grad`), leaf memoization (`node_of`), recursive post-order DFS (`_topo`), scalar loss seeding |
 | **Optimizer** | `SGD` — `sgd_create(lr)`, `sgd_add_param`, `sgd_step(w -= lr*grad)`, `sgd_zero_grad`, `sgd_free`; works with persistent params + pool grads |
-| **Tooling** | `Makefile` (`make test` 4 tests), `clang-format` LLVM 100-col, `tests/test_all.c` harness |
+| **Tooling** | `Makefile` (`make test` 7 tests), `clang-format` LLVM 100-col, `tests/test_all.c` harness |
 | **Zero Dependencies** | Only `libc` + `libm` |
 
 ---
@@ -96,7 +96,7 @@ x[2,3] pool (activations) ────┘          ▲ graph built on requires_g
 ├── optimizer.h / optimizer.c     # SGD optimizer (vanilla GD, persistent params)
 ├── Main.c                        # Phase 2 demo: persistent w + SGD, loss 0.346→0.323 in 5 steps
 ├── Matrix_Basic_Fun.h/c          # Legacy matrix helpers (kept for reference)
-├── tests/test_all.c              # 4 tests: create_and_fill, persistent_survives, sgd_step, end_to_end
+├── tests/test_all.c              # 7 tests: create_and_fill, persistent_survives, sgd_step, end_to_end, randn_basic, xavier_uniform_2d, xavier_normal_2d
 ├── Makefile                      # CC=gcc, CFLAGS=-Wall -Wextra -I., SRC+=optimizer.c, `make test`
 ├── .clang-format                 # LLVM, IndentWidth 4, ColumnLimit 100, SortIncludes CaseSensitive
 └── README.md
@@ -118,10 +118,10 @@ x[2,3] pool (activations) ────┘          ▲ graph built on requires_g
 # Phase 2 training demo (SGD, persistent weights)
 gcc -Wall -Wextra tensor.c ops.c Autograd.c memory_pool.c optimizer.c Main.c -lm -o /tmp/cml
 /tmp/cml
-# Initial w: [2,2,2,2,2,2]
-# step 0: loss=0.346574  w[0] 2.000000 -> 1.996250 (grad 0.375000) cleared
-# step 1: loss=0.338594  ...
-# Final w: [1.9840, 2.0160, ...]
+# Initial w: Xavier-uniform initialized
+# step 0: loss varies with Xavier init
+# step 1: loss decreasing
+# Final w: learned weights
 echo $?  # 0
 ```
 
@@ -130,7 +130,7 @@ echo $?  # 0
 ```bash
 make test
 # gcc -Wall -Wextra -I. tests/test_all.c tensor.c ops.c Autograd.c memory_pool.c optimizer.c -lm -o /tmp/test_all && /tmp/test_all
-# 4 passed 0 failed
+# 7 passed 0 failed
 ```
 
 ### Format
@@ -156,9 +156,12 @@ clang-format --dry-run --Werror Main.c tensor.c ops.c Autograd.c memory_pool.c o
 #define N_STEPS 5
 
 int main() {
+    tensor_random_seed(42);
     // Persistent weight — malloc-backed, survives pool_reset
+    Tensor *w_init = tensor_xavier_uniform((size_t[]){3, 2}, 2);
     Tensor *w = tensor_persistent_create((size_t[]){3, 2}, 2);
-    tensor_fill(w, 2.0f);
+    memcpy(w->data, w_init->data, 3 * 2 * sizeof(float));
+    w->requires_grad = true;
     SGD *opt = sgd_create(0.01f);
     sgd_add_param(opt, w); // sets requires_grad=true
 
@@ -291,6 +294,11 @@ Order matters: `backward → step (reads pool grad) → zero_grad (nulls) → po
 | `tensor_fill` | `void tensor_fill(Tensor *t, float v)` | Fill all `size` elements |
 | `tensor_print` | `void tensor_print(const Tensor *t)` | Print shape/dtype/requires_grad + data (trunc>100) |
 | `tensor_clone` | `Tensor *tensor_clone(const Tensor *t)` | Deep copy via pool + `memcpy` |
+| `tensor_randn` | `Tensor *tensor_randn(size_t *shape, size_t ndim)` | Pool tensor with standard normal values ~N(0,1) |
+| `tensor_xavier_uniform` | `Tensor *tensor_xavier_uniform(size_t *shape, size_t ndim)` | Pool tensor with uniform Xavier init U(-a,a) for 2D |
+| `tensor_xavier_normal` | `Tensor *tensor_xavier_normal(size_t *shape, size_t ndim)` | Pool tensor with normal Xavier init N(0,std^2) for 2D |
+| `tensor_xavier_uniform_fan` | `Tensor *tensor_xavier_uniform_fan(size_t fan_in, size_t fan_out)` | Convenience: Xavier uniform with explicit fan sizes |
+| `tensor_random_seed` | `void tensor_random_seed(unsigned int seed)` | Seed RNG for reproducible init |
 
 ### Memory Pool (`memory_pool.h`)
 
@@ -360,7 +368,7 @@ make test
 ```
 
 - Harness `tests/test_all.c` — `TEST`/`ASSERT`/`ASSERT_CLOSE`, `pool_reset` per test, `passed/failed` summary.
-- **4 tests:** `tensor_create_and_fill` (shape/fill), `persistent_survives_pool_reset` (malloc survives pool reset), `sgd_step_basic` (1→0.95 with grad 0.5 lr0.1), `end_to_end_training_step` (full forward→backward→step, loss 0.34, weight moves).
+- **7 tests:** `tensor_create_and_fill` (shape/fill), `persistent_survives_pool_reset` (malloc survives pool reset), `sgd_step_basic` (1→0.95 with grad 0.5 lr0.1), `end_to_end_training_step` (full forward→backward→step, loss 0.34, weight moves), `randn_basic` (unit normal stats), `xavier_uniform_2d` (bounded by sqrt(6/(fan_in+fan_out))), `xavier_normal_2d` (std matches sqrt(2/(fan_in+fan_out))).
 - Next: `matmul` known answer, `softmax` rows sum 1, numerical grad check, pool OOM/align.
 
 ---
@@ -393,8 +401,8 @@ make test
 - [x] **Optimizer** — `SGD` vanilla GD `w -= lr*grad`, `sgd_step`/`sgd_zero_grad` (`optimizer.h/c`)
 - [x] **Weight persistence** — `tensor_persistent_create` / `tensor_persistent_free` (malloc vs pool), demo loss `0.346 → 0.323`
 - [x] Expand tests to 4 (`persistent`, `sgd_step`, `end_to_end`)
-- [ ] Random initialization (`randn` / `xavier`)
-- [ ] `Linear` / `Module` abstraction
+- [x] **Random initialization** — `tensor_randn`, `tensor_xavier_uniform`, `tensor_xavier_normal`, `tensor_xavier_uniform_fan`, `tensor_random_seed` (Box-Muller + reproducibility)
+- [x] `Linear` / `Module` abstraction
 - [ ] Adam (`m/v` moments), additional ops (`broadcast_add`, `conv2d`), `opnode_free`
 - [ ] DataLoader (`batch_size`, `shuffle`) & training on real dataset (MNIST/XOR)
 
@@ -403,7 +411,7 @@ make test
 ## Contributing
 
 1. Branch from `main`, write failing test in `tests/test_all.c`
-2. Implement, ensure `make test` (4 passed) and `gcc -Wall -Wextra ... -lm` pass
+2. Implement, ensure `make test` (7 passed) and `gcc -Wall -Wextra ... -lm` pass
 3. Format: `clang-format -i` (CI checks `--dry-run --Werror`)
 4. Commit with conventional message, push, open PR
 

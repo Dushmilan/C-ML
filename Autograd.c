@@ -197,6 +197,48 @@ void autograd_backward_cross_entropy(OpNode *node) {
     _acc_grad(node->inputs[0], gi);
 }
 
+void autograd_backward_broadcast_add(OpNode *node) {
+    Tensor *A = node->saved[0];
+    Tensor *B = node->saved[1];
+    Tensor *g = node->grad;
+    if (!g) return;
+
+    size_t out_ndim = node->bcast_ndim;
+    size_t *sout  = node->bcast_shape;
+    size_t *stra  = node->bcast_stra;
+    size_t *strb  = node->bcast_strb;
+
+    size_t out_size = 1;
+    for (size_t i = 0; i < out_ndim; i++) out_size *= sout[i];
+
+    size_t stride_out[8];
+    stride_out[out_ndim - 1] = 1;
+    for (size_t i = out_ndim - 1; i-- > 0;)
+        stride_out[i] = stride_out[i + 1] * sout[i + 1];
+
+    Tensor *gA = NULL, *gB = NULL;
+    if (A->requires_grad)
+        gA = tensor_create(A->shape, A->ndim);
+    if (B->requires_grad)
+        gB = tensor_create(B->shape, B->ndim);
+    if (!gA && !gB) return;
+
+    for (size_t gi = 0; gi < out_size; gi++) {
+        size_t ai = 0, bi = 0, tmp = gi;
+        for (size_t d = 0; d < out_ndim; d++) {
+            size_t coord = tmp / stride_out[d];
+            tmp %= stride_out[d];
+            ai += coord * stra[d];
+            bi += coord * strb[d];
+        }
+        if (gA) gA->data[ai] += g->data[gi];
+        if (gB) gB->data[bi] += g->data[gi];
+    }
+
+    _acc_grad(node->inputs[0], gA);
+    _acc_grad(node->inputs[1], gB);
+}
+
 /* ---------- Graph traversal ---------- */
 
 /* Recursive post-order DFS: dependencies appear before dependents. */

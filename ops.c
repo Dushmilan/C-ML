@@ -7,6 +7,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 Tensor *matmul(const Tensor *A, const Tensor *B) {
     if (!A || !B || !A->data || !B->data)
@@ -282,5 +283,86 @@ Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets) {
         }
     }
 
+    return result;
+}
+
+Tensor *broadcast_add(const Tensor *A, const Tensor *B) {
+    if (!A || !B) return NULL;
+
+    // Compute output shape (right-aligned, dim is 1 broadcasts)
+    size_t out_ndim = (A->ndim > B->ndim) ? A->ndim : B->ndim;
+    size_t out_shape[8]; // support up to 8 dims; enough for ML
+    size_t sa[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+    size_t sb[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+
+    // Right-align A into out_ndim
+    for (size_t i = 0; i < A->ndim; i++)  sa[out_ndim - A->ndim + i] = A->shape[i];
+    for (size_t i = 0; i < B->ndim; i++)  sb[out_ndim - B->ndim + i] = B->shape[i];
+
+    size_t out_size = 1;
+    for (size_t i = 0; i < out_ndim; i++) {
+        size_t da = sa[i], db = sb[i];
+        if (da == db) { out_shape[i] = da; }
+        else if (da == 1) { out_shape[i] = db; }
+        else if (db == 1) { out_shape[i] = da; }
+        else { fprintf(stderr, "broadcast_add: incompatible dim %zu vs %zu\n", da, db); return NULL; }
+        out_size *= out_shape[i];
+    }
+
+    float *out_data = (float *)pool_alloc(get_pool(), out_size * sizeof(float));
+    Tensor *result   = (Tensor *)pool_alloc(get_pool(), sizeof(Tensor));
+    size_t *out_shape_ptr = (size_t *)pool_alloc(get_pool(), out_ndim * sizeof(size_t));
+    if (!out_data || !result || !out_shape_ptr) return NULL;
+
+    memset(result, 0, sizeof(Tensor));
+    memcpy(out_shape_ptr, out_shape, out_ndim * sizeof(size_t));
+    result->data  = out_data;
+    result->shape = out_shape_ptr;
+    result->ndim  = out_ndim;
+    result->size  = out_size;
+    result->dtype = FLOAT32;
+    result->requires_grad = A->requires_grad || B->requires_grad;
+
+    // Compute strides (in elements) for the *output* shape, applied to A and B
+    size_t stride_out[8];
+    stride_out[out_ndim - 1] = 1;
+    for (size_t i = out_ndim - 1; i-- > 0;)
+        stride_out[i] = stride_out[i + 1] * out_shape[i + 1];
+
+    // A-stride per output dim: 0 if A dim is 1, else stride_out[i]
+    size_t stra[8], strb[8];
+    for (size_t i = 0; i < out_ndim; i++) {
+        stra[i] = (sa[i] == 1) ? 0 : stride_out[i];
+        strb[i] = (sb[i] == 1) ? 0 : stride_out[i];
+    }
+
+    for (size_t i = 0; i < out_size; i++) {
+        size_t ai = 0, bi = 0;
+        size_t tmp = i;
+        for (size_t d = 0; d < out_ndim; d++) {
+            size_t coord = tmp / stride_out[d];
+            tmp %= stride_out[d];
+            ai += coord * stra[d];
+            bi += coord * strb[d];
+        }
+        out_data[i] = A->data[ai] + B->data[bi];
+    }
+
+    if (result->requires_grad) {
+        OpNode *in[2] = { node_of((Tensor*)A), node_of((Tensor*)B) };
+        OpNode *node = opnode_create(in, 2, autograd_backward_broadcast_add);
+        if (node) {
+            node->value = result;
+            node->bcast_ndim = out_ndim;
+            for (size_t i = 0; i < out_ndim; i++) {
+                node->bcast_shape[i] = out_shape[i];
+                node->bcast_stra[i]  = stra[i];
+                node->bcast_strb[i]  = strb[i];
+            }
+            opnode_save(node, (Tensor*)A);
+            opnode_save(node, (Tensor*)B);
+            result->grad_fn = node;
+        }
+    }
     return result;
 }
