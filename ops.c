@@ -285,8 +285,11 @@ Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets) {
 
     return result;
 }
-
-Tensor *broadcast_add(const Tensor *A, const Tensor *B) {
+/*
+Adds matrices A and B where A nd B may have different shapes, but are broadcastable. Returns a new 
+tensor with the broadcasted shape.
+*/
+Tensor *broadcast_add(const Tensor *A, const Tensor *B) { 
     if (!A || !B) return NULL;
 
     // Compute output shape (right-aligned, dim is 1 broadcasts)

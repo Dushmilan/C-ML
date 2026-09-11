@@ -294,3 +294,50 @@ void tensor_backward(Tensor *tensor) {
 
     free(order);
 }
+
+/*
+ * Free a single graph node (inputs/saved arrays + struct).
+ * Saved/value/grad tensors are pool- or caller-owned — never freed here.
+ */
+void opnode_free(OpNode *node) {
+    if (!node)
+        return;
+    free(node->inputs);
+    free(node->saved);
+    free(node);
+}
+
+/*
+ * Free one backward graph rooted at loss.
+ * Frees every intermediate node (backward != NULL) exactly once via topo
+ * order and detaches value->grad_fn so pool_reset can't leave dangling
+ * pointers. Leaf nodes (backward == NULL, e.g. persistent weights) are
+ * kept — they are created once and reused across steps.
+ * Call after sgd_step/zero_grad, before pool_reset.
+ */
+void opnode_free_graph(Tensor *loss) {
+    if (!loss || !loss->grad_fn)
+        return;
+
+    size_t cap = 16, len = 0;
+    OpNode **order = (OpNode **)malloc(cap * sizeof(OpNode *));
+    if (!order)
+        return;
+
+    _topo(loss->grad_fn, &order, &len, &cap);
+    for (size_t i = 0; i < len; i++)
+        order[i]->visited = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        OpNode *n = order[i];
+        if (!n || !n->backward)
+            continue; // keep leaves (persistent params)
+        if (n->value)
+            n->value->grad_fn = NULL;
+        free(n->inputs);
+        free(n->saved);
+        free(n);
+    }
+
+    free(order);
+}

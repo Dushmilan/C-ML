@@ -16,11 +16,12 @@
 
 - **Tensor** — n-dimensional array with dtype, shape, autograd metadata, and **persistent** (malloc) vs **pool** allocation
 - **Memory Pool** — 1 GiB arena / bump allocator for per-step activations (O(1) reclaim via `pool_reset`)
-- **Ops** — `matmul`, `add`, `relu`, `softmax`, `cross_entropy_loss` (forward)
-- **Autograd** — dynamic computation graph with reverse-mode backprop and topological sort
+- **Ops** — `matmul`, `add`, `relu`, `softmax`, `cross_entropy_loss`, `broadcast_add` (forward)
+- **Autograd** — dynamic computation graph with reverse-mode backprop, topological sort, and graph cleanup (`opnode_free_graph`)
 - **Optimizer** — vanilla **SGD** (`w -= lr * grad`) with `zero_grad` and persistent weight support
+- **Module** — `Linear` layer (`y = x @ W + b`) with Xavier-init, base `Module` struct for future layers
 
-Phase 1 is **complete** (tensor/pool/ops/autograd). Phase 2 **optimizer is complete** — training now actually learns. Phase 2 **random initialization is complete** (Xavier/randn). Next: modules, Adam, DataLoader.
+Phase 1 is **complete** (tensor/pool/ops/autograd). Phase 2 **optimizer + Module + graph cleanup are complete**. Next: Adam, DataLoader, real dataset training.
 
 Framework is intentionally minimal and readable — ideal for learning how tensors, memory, and backprop actually work under the hood.
 
@@ -50,10 +51,11 @@ Framework is intentionally minimal and readable — ideal for learning how tenso
 |------|---------|
 | **Tensor** | Dynamic `ndim`/`shape`/`size`, `FLOAT32` storage, `requires_grad` + `grad` + `grad_fn`, `tensor_persistent_create` for weights |
 | **Memory Pool** | Single 1 GiB backing buffer, 16-byte aligned bump allocator, `alloc_count` tracking, zero per-allocation `free` overhead |
-| **Ops (Forward)** | `matmul` (2D, O(m·k·n)), `add` (elementwise), `relu`, `softmax` (stable, arbitrary axis), `cross_entropy_loss` (mean, clamped) |
-| **Autograd (Backward)** | Per-op `backward` kernels, gradient accumulation (`_acc_grad`), leaf memoization (`node_of`), recursive post-order DFS (`_topo`), scalar loss seeding |
+| **Ops (Forward)** | `matmul` (2D, O(m·k·n)), `add` (elementwise), `relu`, `softmax` (stable, arbitrary axis), `cross_entropy_loss` (mean, clamped), `broadcast_add` (shape-flexible) |
+| **Autograd (Backward)** | Per-op `backward` kernels, gradient accumulation (`_acc_grad`), leaf memoization (`node_of`), recursive post-order DFS (`_topo`), scalar loss seeding, `opnode_free_graph` for graph cleanup |
 | **Optimizer** | `SGD` — `sgd_create(lr)`, `sgd_add_param`, `sgd_step(w -= lr*grad)`, `sgd_zero_grad`, `sgd_free`; works with persistent params + pool grads |
-| **Tooling** | `Makefile` (`make test` 7 tests), `clang-format` LLVM 100-col, `tests/test_all.c` harness |
+| **Module** | `Linear` layer (`y = x @ W + b`) with Xavier-init, `module_add_param`, `module_zero_grad`, `module_parameters` |
+| **Tooling** | `Makefile` (`make test` 11 tests), `clang-format` LLVM 100-col, `tests/test_all.c` harness |
 | **Zero Dependencies** | Only `libc` + `libm` |
 
 ---
@@ -61,15 +63,16 @@ Framework is intentionally minimal and readable — ideal for learning how tenso
 ## Architecture
 
 ```
-Main.c (training loop: DataLoader → forward → backward → SGD → reset)
+Main.c (training loop: forward → backward → SGD → graph cleanup → reset)
    │
    ├── tensor.h/c ──┐ (pool vs persistent)
    ├── ops.h/c ─────┼──► memory_pool.h/c (arena: pool_create / pool_alloc / pool_reset / get_pool)
-   ├── Autograd.h/c ┘ (opnode_create, node_of, _acc_grad, _topo, tensor_backward)
-   └── optimizer.h/c    (sgd_create, sgd_add_param, sgd_step, sgd_zero_grad)
+   ├── Autograd.h/c ┘ (opnode_create, node_of, _acc_grad, _topo, tensor_backward, opnode_free_graph)
+   ├── optimizer.h/c    (sgd_create, sgd_add_param, sgd_step, sgd_zero_grad)
+   └── Module/module.h/c (Linear, module_add_param, module_zero_grad, module_parameters)
 ```
 
-**Data flow for one step (Phase 2):**
+**Data flow for one step:**
 
 ```
 w[3,2] persistent (malloc) ──┐
@@ -80,6 +83,7 @@ x[2,3] pool (activations) ────┘          ▲ graph built on requires_g
                                          │
                                      sgd_step: w -= lr*w.grad (reads pool grad before reset)
                                      sgd_zero_grad: w.grad=NULL
+                                     opnode_free_graph(loss): free intermediate OpNodes, keep leaf w
                                      pool_reset → reclaims x/logits/probs/loss/grads, w persists
 ```
 
@@ -91,13 +95,14 @@ x[2,3] pool (activations) ────┘          ▲ graph built on requires_g
 .
 ├── tensor.h / tensor.c           # Tensor struct, pool create + persistent create, fill/print/clone
 ├── memory_pool.h / memory_pool.c # Arena allocator (1 GiB, 16B align, bump + reset)
-├── ops.h / ops.c                 # Forward ops: matmul, add, relu, softmax, cross_entropy_loss
-├── Autograd.h / Autograd.c       # OpNode graph, backward kernels, topo sort, tensor_backward
+├── ops.h / ops.c                 # Forward ops: matmul, add, relu, softmax, cross_entropy_loss, broadcast_add
+├── Autograd.h / Autograd.c       # OpNode graph, backward kernels, topo sort, tensor_backward, opnode_free_graph
 ├── optimizer.h / optimizer.c     # SGD optimizer (vanilla GD, persistent params)
-├── Main.c                        # Phase 2 demo: persistent w + SGD, loss 0.346→0.323 in 5 steps
+├── Module/module.h / module.c    # Linear layer (y = x @ W + b), base Module struct
+├── Main.c                        # Demo: persistent w + SGD + graph cleanup, 5 training steps
 ├── Matrix_Basic_Fun.h/c          # Legacy matrix helpers (kept for reference)
-├── tests/test_all.c              # 7 tests: create_and_fill, persistent_survives, sgd_step, end_to_end, randn_basic, xavier_uniform_2d, xavier_normal_2d
-├── Makefile                      # CC=gcc, CFLAGS=-Wall -Wextra -I., SRC+=optimizer.c, `make test`
+├── tests/test_all.c              # 11 tests: tensor, persistent, sgd, end_to_end, randn, xavier, broadcast_add, linear, graph cleanup
+├── Makefile                      # CC=gcc, CFLAGS=-Wall -Wextra -I., SRC+=optimizer.c module.c, `make test`
 ├── .clang-format                 # LLVM, IndentWidth 4, ColumnLimit 100, SortIncludes CaseSensitive
 └── README.md
 ```
@@ -317,6 +322,7 @@ Tensor *add(const Tensor *A, const Tensor *B);                 // size must matc
 Tensor *relu(const Tensor *A);
 Tensor *softmax(const Tensor *A, int axis);
 Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets); // returns [1]
+Tensor *broadcast_add(const Tensor *A, const Tensor *B);       // shape-flexible addition
 ```
 
 ### Autograd (`Autograd.h`)
@@ -325,7 +331,23 @@ Tensor *cross_entropy_loss(const Tensor *logits, const Tensor *targets); // retu
 OpNode *opnode_create(OpNode **inputs, size_t n, void (*backward)(OpNode*));
 int     opnode_save(OpNode *node, Tensor *t);
 OpNode *node_of(Tensor *t);
+void    opnode_free(OpNode *node);           // free single node
+void    opnode_free_graph(Tensor *loss);     // free intermediate graph, keep leaves
 void    tensor_backward(Tensor *loss);
+```
+
+### Module (`Module/module.h`)
+
+```c
+void module_init(Module *m, ModuleForward fwd, void (*free_self)(Module*));
+int   module_add_param(Module *m, Tensor *p);
+int   module_add_submodule(Module *m, Module *child);
+void  module_zero_grad(Module *m);
+void  module_parameters(Module *m, Tensor ***out, size_t *n);
+
+Linear *linear_create(size_t in_features, size_t out_features, bool bias);
+Tensor *linear_forward(Module *self, const Tensor *x);
+void    linear_free(Linear *l);
 ```
 
 ### Optimizer (`optimizer.h`)
@@ -346,11 +368,12 @@ void  sgd_free(SGD *opt);
 ```
 Persistent: w (malloc) ─────────────────────────────── lives across steps
 Ephemeral:  x/logits/probs/loss/grads (pool) ───► pool_reset per step
+OpNodes:    intermediate graph nodes (malloc) ───► opnode_free_graph per step
 ```
 
 ```
-Step:  create pool x → forward → backward → sgd_step (reads pool grad) → sgd_zero_grad → pool_reset
-Next:  prior pool Tensor* are DANGLING (still in 1 GiB but overwritten), w persists
+Step:  create pool x → forward → backward → sgd_step → sgd_zero_grad → opnode_free_graph → pool_reset
+Next:  prior pool Tensor* are DANGLING, intermediate OpNodes freed, leaf w persists
 ```
 
 **Pitfalls:**
@@ -368,7 +391,7 @@ make test
 ```
 
 - Harness `tests/test_all.c` — `TEST`/`ASSERT`/`ASSERT_CLOSE`, `pool_reset` per test, `passed/failed` summary.
-- **7 tests:** `tensor_create_and_fill` (shape/fill), `persistent_survives_pool_reset` (malloc survives pool reset), `sgd_step_basic` (1→0.95 with grad 0.5 lr0.1), `end_to_end_training_step` (full forward→backward→step, loss 0.34, weight moves), `randn_basic` (unit normal stats), `xavier_uniform_2d` (bounded by sqrt(6/(fan_in+fan_out))), `xavier_normal_2d` (std matches sqrt(2/(fan_in+fan_out))).
+- **11 tests:** `tensor_create_and_fill`, `persistent_survives_pool_reset`, `sgd_step_basic`, `end_to_end_training_step`, `randn_basic`, `xavier_uniform_2d`, `xavier_normal_2d`, `broadcast_add_forward_bias_row`, `linear_create_and_forward`, `linear_end_to_end_gradients`, `opnode_free_graph_clears_intermediates_keeps_leaf`.
 - Next: `matmul` known answer, `softmax` rows sum 1, numerical grad check, pool OOM/align.
 
 ---
@@ -397,13 +420,17 @@ make test
 - [x] Add tests (`make test`)
 - [x] Format codebase
 
-**Phase 2 — In Progress**
+**Phase 2 — Complete**
 - [x] **Optimizer** — `SGD` vanilla GD `w -= lr*grad`, `sgd_step`/`sgd_zero_grad` (`optimizer.h/c`)
 - [x] **Weight persistence** — `tensor_persistent_create` / `tensor_persistent_free` (malloc vs pool), demo loss `0.346 → 0.323`
 - [x] Expand tests to 4 (`persistent`, `sgd_step`, `end_to_end`)
 - [x] **Random initialization** — `tensor_randn`, `tensor_xavier_uniform`, `tensor_xavier_normal`, `tensor_xavier_uniform_fan`, `tensor_random_seed` (Box-Muller + reproducibility)
 - [x] `Linear` / `Module` abstraction
-- [ ] Adam (`m/v` moments), additional ops (`broadcast_add`, `conv2d`), `opnode_free`
+- [x] **Graph cleanup** — `opnode_free`, `opnode_free_graph` (free intermediate OpNodes, keep leaf params)
+- [x] `broadcast_add` op (shape-flexible addition for bias)
+
+**Phase 3 — TODO**
+- [ ] Adam (`m/v` moments), `conv2d`, additional ops
 - [ ] DataLoader (`batch_size`, `shuffle`) & training on real dataset (MNIST/XOR)
 
 ---
@@ -411,7 +438,7 @@ make test
 ## Contributing
 
 1. Branch from `main`, write failing test in `tests/test_all.c`
-2. Implement, ensure `make test` (7 passed) and `gcc -Wall -Wextra ... -lm` pass
+2. Implement, ensure `make test` (11 passed) and `gcc -Wall -Wextra ... -lm` pass
 3. Format: `clang-format -i` (CI checks `--dry-run --Werror`)
 4. Commit with conventional message, push, open PR
 

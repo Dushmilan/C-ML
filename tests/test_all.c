@@ -251,6 +251,60 @@ TEST(linear_end_to_end_gradients) {
     passed++;
 }
 
+TEST(opnode_free_graph_clears_intermediates_keeps_leaf) {
+    pool_reset(get_pool());
+    size_t sh_w[2] = {3, 2};
+    Tensor *w = tensor_persistent_create(sh_w, 2);
+    tensor_fill(w, 1.0f);
+    w->requires_grad = true;
+    OpNode *leaf_before = node_of(w);
+    ASSERT(leaf_before != NULL);
+
+    Tensor *x = tensor_create((size_t[]){2, 3}, 2);
+    x->data[0] = 1; x->data[1] = 2; x->data[2] = 3;
+    x->data[3] = 4; x->data[4] = 5; x->data[5] = 6;
+    Tensor *t = tensor_create((size_t[]){2, 2}, 2);
+    t->data[0] = 1; t->data[1] = 0;
+    t->data[2] = 0; t->data[3] = 1;
+
+    Tensor *logits = matmul(x, w);
+    Tensor *probs = softmax(logits, 1);
+    Tensor *loss = cross_entropy_loss(probs, t);
+    ASSERT(loss != NULL);
+    tensor_backward(loss);
+    ASSERT(w->grad != NULL);
+    ASSERT(logits->grad_fn != NULL);
+
+    opnode_free_graph(loss);
+
+    // Intermediate nodes detached, persistent leaf node survives
+    ASSERT(logits->grad_fn == NULL);
+    ASSERT(probs->grad_fn == NULL);
+    ASSERT(loss->grad_fn == NULL);
+    ASSERT(w->grad_fn == leaf_before);
+
+    // Second step still works — leaf node not dangling
+    pool_reset(get_pool());
+    Tensor *x2 = tensor_create((size_t[]){2, 3}, 2);
+    for (size_t i = 0; i < 6; i++) x2->data[i] = (float)(i + 1);
+    Tensor *t2 = tensor_create((size_t[]){2, 2}, 2);
+    t2->data[0] = 1; t2->data[1] = 0;
+    t2->data[2] = 0; t2->data[3] = 1;
+    Tensor *logits2 = matmul(x2, w);
+    Tensor *probs2 = softmax(logits2, 1);
+    Tensor *loss2 = cross_entropy_loss(probs2, t2);
+    ASSERT(loss2 != NULL);
+    w->grad = NULL;
+    if (w->grad_fn) w->grad_fn->grad = NULL;
+    tensor_backward(loss2);
+    ASSERT(w->grad != NULL);
+    opnode_free_graph(loss2);
+
+    pool_reset(get_pool());
+    tensor_persistent_free(w);
+    passed++;
+}
+
 int main() {
     test_tensor_create_and_fill();
     test_persistent_survives_pool_reset();
@@ -262,6 +316,7 @@ int main() {
     test_broadcast_add_forward_bias_row();
     test_linear_create_and_forward();
     test_linear_end_to_end_gradients();
+    test_opnode_free_graph_clears_intermediates_keeps_leaf();
     printf("%d passed %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

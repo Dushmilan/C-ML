@@ -27,6 +27,8 @@ typedef struct OpNode {
 OpNode *opnode_create(OpNode **inputs, size_t n_inputs, void (*backward)(OpNode *));
 int opnode_save(OpNode *node, Tensor *tensor);
 OpNode *node_of(Tensor *tensor);
+void opnode_free(OpNode *node);
+void opnode_free_graph(Tensor *loss);
 
 void autograd_backward_matmul(OpNode *node);
 void autograd_backward_add(OpNode *node);

@@ -60,6 +60,10 @@ int main() {
         float w_after = w->data[0];
         sgd_zero_grad(opt);
 
+        // Free per-step graph nodes (malloc'd) before pool reclaims tensors
+        if (loss)
+            opnode_free_graph(loss);
+
         printf("step %d: loss=%.6f  w[0] %.6f -> %.6f (grad %.6f) %s\n", step, loss_val, w_before,
                w_after, grad0_before, w->grad ? "grad still present" : "cleared");
 
